@@ -12,12 +12,12 @@ edition = '2018'
 
 
 [dependencies]
-html5ever = "*"
-num-rational = "*"
-num-traits = "*"
-itertools = "*"
-lazy_static = "*"
-hyphenation = "*"
-textwrap = { version = "*" }
-regex = "*"
-unicode-segmentation = "*"
+html5ever = "^0"
+num-rational = "^0"
+num-traits = "^0"
+itertools = "^0"
+lazy_static = "~1"
+hyphenation = "^0"
+textwrap = { version = "^0" }
+regex = "~1"
+unicode-segmentation = "~1"
