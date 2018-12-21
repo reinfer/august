@@ -16,7 +16,7 @@ and this to your code:
 use august;
 
 let input = "<p>Hello</p><i>Here's some HTML!</i>"
-println!("{}", august::convert(&buffer[..], 79));
+println!("{}", august::convert(input, 79));
 ```
 
 The output now looks like this:
