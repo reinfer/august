@@ -1,0 +1,25 @@
+TRUTH TABLES
+
+OR
+
+       TRUE  FALSE
+TRUE   True  True
+FALSE  True  False
+
+AND
+
+       TRUE   FALSE
+TRUE   True   False
+FALSE  False  False
+
+XOR
+
+       TRUE   FALSE
+TRUE   False  True
+FALSE  True   False
+
+NOT AND
+
+       TRUE   FALSE
+TRUE   False  False
+FALSE  False  True

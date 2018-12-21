@@ -1,0 +1,7 @@
+Here's a file with some unusual examples, like:
+
+* a link with no target
+* an abbreviation with no title
+* a *bold, with a paragraph inside*
+
+Here's a wacky table This isn't in a tr element Isn't HTML amazing?
