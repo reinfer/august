@@ -1,4 +1,3 @@
-use august;
 use std::io::{self, Read, Write};
 
 fn main() -> io::Result<()> {
