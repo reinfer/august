@@ -9,6 +9,7 @@ repository = "https://gitlab.com/alantrick/august-rust/"
 keywords = ["text", "html", "converter"]
 categories = ["text-processing"]
 edition = '2018'
+readme = "README.md"
 
 
 [dependencies]
