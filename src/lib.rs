@@ -584,7 +584,9 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
                             },
                             _ => 1
                         };
-                        result.push(Ratio::new(child.size_hint().width, span));
+                        for _ in 0..span {
+                            result.push(Ratio::new(child.size_hint().width, span));
+                        }
                     }
                     vec!(result)
                 }, _ => vec!(vec!(Ratio::new(row.size_hint().width, 1))),
@@ -633,6 +635,9 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
                 }
             } else { 1 };
 
+            if idx + span > column_widths.len() {
+                panic!("thing too big {} {} {}", idx, span, column_widths.len());
+            }
             let width = column_widths[idx..idx+span].iter().sum();
 
             let text = match child {
