@@ -1,7 +1,7 @@
 [package]
 name = "august"
 description = "A crate & program for converting HTML to plain text."
-version = "0.1.0"
+version = "0.1.1"
 license = "LGPL-3.0-or-later"
 homepage = "https://gitlab.com/alantrick/august-rust/"
 authors = ["Alan Trick <me@alantrick.ca>"]
