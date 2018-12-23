@@ -10,7 +10,6 @@ use textwrap;
 use num_rational::Ratio;
 use num_traits::Zero;
 use itertools::Itertools;
-// use servo::string_cache::atom;
 use html5ever::{parse_document, rcdom::{NodeData, RcDom, Handle}};
 use html5ever::{interface::Attribute, tendril::{Tendril, TendrilSink}};
 use unicode_segmentation::UnicodeSegmentation;
@@ -45,17 +44,31 @@ macro_rules! formatted_element {
     };
 }
 
-fn s_element (element: &ElementData, _: &mut DocState) -> ElementType {
-    let text = element.get_text();
-    let text_len = text.as_str().graphemes(true).count();
-    let suffix = if text_len > 10 {
-        let wordcount  = text.split_whitespace().count();
-        "^W".repeat(wordcount)
-    } else {
-        "^H".repeat(text_len)
+macro_rules! fn_element {
+    ($fname:ident) => {
+        |element: &ElementData, _: &mut DocState| {
+            let text = element.get_text();
+            ElementType::from_text($fname(&text).as_str())
+        }
     };
-    ElementType::from_text(format!("{}{}", text, suffix).as_str())
 }
+
+fn strike (text: &str) -> String {
+    let mut result = String::new();
+    for graph in text.graphemes(true) {
+        result.push_str(graph);
+        result.push('\u{0336}');
+    }
+    result
+}
+
+#[test]
+fn test_strike() {
+    let output = "s̶t̶r̶i̶k̶e̶";
+    let input = "strike";
+    assert_eq!(output, strike(&input));
+}
+
 
 fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
     let text = element.get_text();
@@ -116,7 +129,7 @@ fn get_inline_fn(tag_name: &str) -> Option<InlineFn> {
         "i" => Some(formatted_element!("/{}/")),
         "em" => Some(formatted_element!("/{}/")),
         "u" => Some(formatted_element!("_{}_")),
-        "s" => Some(s_element),
+        "s" => Some(fn_element!(strike)),
         "a" => Some(a_element),
         "abbr" => Some(abbr_element),
         "img" => Some(img_element),
