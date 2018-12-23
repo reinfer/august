@@ -10,6 +10,7 @@ use textwrap;
 use num_rational::Ratio;
 use num_traits::Zero;
 use itertools::Itertools;
+// use servo::string_cache::atom;
 use html5ever::{parse_document, rcdom::{NodeData, RcDom, Handle}};
 use html5ever::{interface::Attribute, tendril::{Tendril, TendrilSink}};
 use unicode_segmentation::UnicodeSegmentation;
@@ -142,16 +143,16 @@ impl ItemizedData {
 }
 
 enum BlockType {
-    BlockElement,
-    HeaderElement,
-    BlockquoteElement,
-    TableElement,
-    TPartElement,
-    TrElement,
-    UlElement,
-    OlElement,
-    LiElement,
-    HrElement,
+    Block,
+    Header,
+    Quote,
+    Table,
+    TPart,
+    TRow,
+    UList,
+    OList,
+    ListItem,
+    Rule,
 }
 
 struct Block {
@@ -164,26 +165,26 @@ struct Block {
 impl Block {
     fn from_tag_name(tag_name: &str, attrs: Vec<Attribute>, children: Vec<ElementType>) -> Option<Block> {
         let tag = match tag_name {
-            "div" => Some(BlockType::BlockElement),
-            "p" => Some(BlockType::BlockElement),
-            "td" => Some(BlockType::BlockElement),
-            "h1" => Some(BlockType::HeaderElement),
-            "h2" => Some(BlockType::HeaderElement),
-            "h3" => Some(BlockType::HeaderElement),
-            "h4" => Some(BlockType::HeaderElement),
-            "h5" => Some(BlockType::HeaderElement),
-            "h6" => Some(BlockType::HeaderElement),
-            "th" => Some(BlockType::HeaderElement),
-            "hr" => Some(BlockType::HrElement),
-            "table" => Some(BlockType::TableElement),
-            "tbody" => Some(BlockType::TPartElement),
-            "thead" => Some(BlockType::TPartElement),
-            "tfoot" => Some(BlockType::TPartElement),
-            "tr" => Some(BlockType::TrElement),
-            "ul" => Some(BlockType::UlElement),
-            "ol" => Some(BlockType::OlElement),
-            "li" => Some(BlockType::LiElement),
-            "blockquote" => Some(BlockType::BlockquoteElement),
+            "div" => Some(BlockType::Block),
+            "p" => Some(BlockType::Block),
+            "td" => Some(BlockType::Block),
+            "h1" => Some(BlockType::Header),
+            "h2" => Some(BlockType::Header),
+            "h3" => Some(BlockType::Header),
+            "h4" => Some(BlockType::Header),
+            "h5" => Some(BlockType::Header),
+            "h6" => Some(BlockType::Header),
+            "th" => Some(BlockType::Header),
+            "hr" => Some(BlockType::Rule),
+            "table" => Some(BlockType::Table),
+            "tbody" => Some(BlockType::TPart),
+            "thead" => Some(BlockType::TPart),
+            "tfoot" => Some(BlockType::TPart),
+            "tr" => Some(BlockType::TRow),
+            "ul" => Some(BlockType::UList),
+            "ol" => Some(BlockType::OList),
+            "li" => Some(BlockType::ListItem),
+            "blockquote" => Some(BlockType::Quote),
             "head" => None,
             "meta" => None,
             "title" => None,
@@ -191,7 +192,7 @@ impl Block {
             "style" => None,
             "colgroup" => None,
             "col" => None,
-            _ => Some(BlockType::BlockElement),
+            _ => Some(BlockType::Block),
         };
         match tag {
             Some(tag) => Some(Block::from_data(tag, attrs, children)),
@@ -200,12 +201,12 @@ impl Block {
     }
 
     fn from_data(tag: BlockType, attrs: Vec<Attribute>, mut children: Vec<ElementType>) -> Block {
-        if let BlockType::OlElement = tag {
+        if let BlockType::OList = tag {
             let mut total = 0;
 
             for child in children.iter() {
                 if let ElementType::Block(el) = child {
-                    if let BlockType::LiElement = el.tag {
+                    if let BlockType::ListItem = el.tag {
                         total += 1;
                     }
                 }
@@ -215,7 +216,7 @@ impl Block {
             for child in children.iter_mut() {
                 if let ElementType::Block(el) = child {
                     count += 1;
-                    if let BlockType::LiElement = el.tag {
+                    if let BlockType::ListItem = el.tag {
                         el.item_data.set_ordering(count, count_length);
                     }
                 }
@@ -225,15 +226,15 @@ impl Block {
     }
 
     fn block_text(&self, width: Option<Width>) -> String {
-        if let BlockType::HrElement = self.tag {
+        if let BlockType::Rule = self.tag {
             "-".repeat(width.unwrap_or(3))
         } else {
             let data = match width {
                 Some(w) => Some(self.get_block_data(w)),
                 None => None,
             };
-            let result = generic_block_text(&self.children, data);
-            if let BlockType::HeaderElement = self.tag {
+            let result = generic_block_text(&self.children, &data);
+            if let BlockType::Header = self.tag {
                 result.to_uppercase()
             } else {
                 result
@@ -253,16 +254,16 @@ impl Block {
 
     fn get_child_block_sep(&self) -> &str {
         match self.tag {
-            BlockType::OlElement => "\n",
-            BlockType::UlElement => "\n",
-            BlockType::BlockquoteElement => "\n>\n",
+            BlockType::OList => "\n",
+            BlockType::UList => "\n",
+            BlockType::Quote => "\n>\n",
             _ => "\n\n",
         }
     }
 
     fn get_first_line_prefix(&self) -> String {
         match self.tag {
-            BlockType::LiElement => {
+            BlockType::ListItem => {
                 let id = &self.item_data;
                 if id.ordered {
                     format!("{:>width$}. ", count=id.count, width=id.count_length)
@@ -270,22 +271,22 @@ impl Block {
                     "* ".to_owned()
                 }
             },
-            BlockType::BlockquoteElement => "> ".to_owned(),
+            BlockType::Quote => "> ".to_owned(),
             _ => "".to_owned(),
         }
     }
 
     fn get_next_line_prefix(&self) -> String {
         match self.tag {
-            BlockType::LiElement => {
+            BlockType::ListItem => {
                 let id = &self.item_data;
                 if id.ordered {
-                    return " ".repeat(id.count_length + 2)
+                    " ".repeat(id.count_length + 2)
                 } else {
                     "  ".to_owned()
                 }
             },
-            BlockType::BlockquoteElement => "> ".to_owned(),
+            BlockType::Quote => "> ".to_owned(),
             _ => "".to_owned(),
         }
     }
@@ -293,7 +294,7 @@ impl Block {
     fn get_attr(&self, key: &str) -> Option<String> {
         let mut result: Option<String> = None;
         for attr in self.attrs.iter() {
-            if attr.name.local.to_string() == key {
+            if &attr.name.local[..] == key {
                 result = Some(String::from(attr.value.clone()));
                 break;
             }
@@ -316,10 +317,7 @@ impl EdgeState {
     }
 
     fn from_re_find(b: bool) -> EdgeState {
-        match b {
-            true => EdgeState::White, 
-            false => EdgeState::Blank, 
-        }
+        if b { EdgeState::White } else { EdgeState::Blank }
     }
 
     fn join_str(&self, other: &EdgeState) -> &str {
@@ -357,7 +355,7 @@ impl ElementType {
                 SizeHint { width: text.as_str().graphemes(true).count() }
             },
             ElementType::Block(block) => {
-                if let BlockType::HrElement = block.tag {
+                if let BlockType::Rule = block.tag {
                     SizeHint { width: 3 }
                 } else {
                     let mut width = 0;
@@ -378,7 +376,7 @@ impl ElementType {
     }
 }
 
-fn get_august_element(node: Handle, doc_state: &mut DocState) -> Option<ElementType> {
+fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<ElementType> {
     match node.data {
         NodeData::Text { ref contents }
             => {
@@ -394,7 +392,7 @@ fn get_august_element(node: Handle, doc_state: &mut DocState) -> Option<ElementT
                 // build vecs
                 let mut child_vec = Vec::new();
                 for child in node.children.borrow().iter() {
-                    if let Some(el) = get_august_element(child.clone(), doc_state) {
+                    if let Some(el) = get_august_element(&child.clone(), doc_state) {
                         child_vec.push(el);
                     }
                 };
@@ -407,23 +405,21 @@ fn get_august_element(node: Handle, doc_state: &mut DocState) -> Option<ElementT
                 if let Some(func) = get_inline_fn(tag_name) {
                     let data = ElementData::from(attrs_vec, child_vec);
                     Some(func(&data, doc_state))
+                } else if let Some(block) = Block::from_tag_name(tag_name, attrs_vec, child_vec) {
+                    Some(ElementType::Block(block))
                 } else {
-                    if let Some(block) = Block::from_tag_name(tag_name, attrs_vec, child_vec) {
-                        Some(ElementType::Block(block))
-                    } else {
-                        None
-                    }
+                    None
                 }
             },
         NodeData::Document => {
             let mut child_vec = Vec::new();
             for child in node.children.borrow().iter() {
-                if let Some(el) = get_august_element(child.clone(), doc_state) {
+                if let Some(el) = get_august_element(&child.clone(), doc_state) {
                     child_vec.push(el);
                 }
             };
             Some(ElementType::Block(Block::from_data(
-                BlockType::BlockElement, Vec::new(), child_vec)))
+                BlockType::Block, Vec::new(), child_vec)))
         }
         _ => None,
     }
@@ -437,13 +433,13 @@ impl ElementData {
     }
 
     fn get_text(&self) -> String {
-        generic_block_text(&self.children, None)
+        generic_block_text(&self.children, &None)
     }
 
     fn get_attr(&self, key: &str) -> Option<String> {
         let mut result: Option<String> = None;
         for attr in self.attrs.iter() {
-            if attr.name.local.to_string() == key {
+            if &attr.name.local[..] == key {
                 result = Some(String::from(attr.value.clone()));
                 break;
             }
@@ -472,8 +468,8 @@ impl<'a> BlockData<'a> {
 }
 
 fn generic_block_text(
-        children: &Vec<ElementType>,
-        block_data: Option<BlockData>) -> String {
+        children: &[ElementType],
+        block_data: &Option<BlockData>) -> String {
 
     let mut blocks = Vec::new();
     let mut last_inline_text = String::new();
@@ -488,7 +484,7 @@ fn generic_block_text(
                 } else {
                     last_inline_text.push_str(had_white_suffix.join_str(prefix));
                     last_inline_text.push_str(text);
-                    had_white_suffix = suffix.clone();
+                    had_white_suffix = *suffix;
                 }
             },
             ElementType::Block(el) => {
@@ -499,7 +495,7 @@ fn generic_block_text(
                         blocks.push(wrapped_lines.join(data.get_sep().as_str()));
                     }
                     let width = Some(data.get_sub_width());
-                    let text = if let BlockType::TableElement = el.tag {
+                    let text = if let BlockType::Table = el.tag {
                         let column_widths = table_column_widths(&el.children);
                         let column_widths = recalculate_column_widths(&column_widths, data.width);
                         let rows = table_rows(el, width, &column_widths);
@@ -544,7 +540,7 @@ fn generic_block_text(
     }
 }
 
-fn table_column_widths(rows: &Vec<ElementType>) -> Vec<Ratio<Width>> {
+fn table_column_widths(rows: &[ElementType]) -> Vec<Ratio<Width>> {
     let mut result = Vec::new();
     for child in rows.iter() {
         let child_results = tr_column_widths(&child);
@@ -569,13 +565,13 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
         ElementType::Text(_, _, _) => vec!(vec!(Ratio::new(row.size_hint().width, 1))),
         ElementType::Block(block) => {
             match block.tag {
-                BlockType::TPartElement => {
+                BlockType::TPart => {
                     let mut result = Vec::new();
                     for child in block.children.iter() {
                         result.extend(tr_column_widths(&child));
                     }
                     result
-                }, BlockType::TrElement => {
+                }, BlockType::TRow => {
                     let mut result = Vec::new();
                     for child in block.children.iter() {
                         if child.is_empty() { continue; }
@@ -598,7 +594,7 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
     }
 }
 
-fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &Vec<Width>) -> Vec<String> {
+fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) -> Vec<String> {
     let mut rows = Vec::new();
     for maybe_row in table.children.iter() {
         if maybe_row.is_empty() { continue; }
@@ -606,11 +602,11 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &Vec<Width
             ElementType::Text(text, _, _) => rows.push(text.to_owned()),
             ElementType::Block(block) => {
                 match block.tag {
-                    BlockType::TPartElement => {
+                    BlockType::TPart => {
                         let inner_rows = table_rows(block, max_width, column_widths);
                         rows.extend(inner_rows);
                     },
-                    BlockType::TrElement => {
+                    BlockType::TRow => {
                         rows.push(tr_text(&block, max_width, &column_widths))
                     },
                     _ => rows.push(block.block_text(max_width))
@@ -621,7 +617,7 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &Vec<Width
     rows
 }
 
-fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &Vec<Width>) -> String {
+fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> String {
     if max_width.is_none() {
         row.block_text(None)
     } else {
@@ -666,9 +662,10 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &Vec<Width>) ->
                     lines[idx].push_str(" ".repeat(width - c_line_len).as_str());
                 }
             }
-            for idx in height..max_height {
-                if !first { lines[idx].push_str(COLUMN_SEP); }
-                lines[idx].push_str(" ".repeat(width).as_str())
+            // here we're just evening out all the cell heights
+            for item in lines.iter_mut().take(max_height).skip(height) {
+                if !first { item.push_str(COLUMN_SEP); }
+                item.push_str(" ".repeat(width).as_str())
             }
             first = false;
             
@@ -678,11 +675,10 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &Vec<Width>) ->
 }
 
 
-fn recalculate_column_widths(
-        widths: &Vec<Ratio<Width>>, max_width: Width) -> Vec<Width> {
+fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<Width> {
 
     let mut result: Vec<Width> = vec![0; widths.len()];
-    if widths.len() > 0 {
+    if !widths.is_empty() {
         let usable_max = Ratio::new(max_width - COLUMN_SEP.len() * (widths.len() - 1), 1);
         let desired_max: Ratio<Width> = widths.iter().sum();
 
@@ -750,9 +746,9 @@ fn test_long_recalculate2() {
 }
 
 
-fn walk(handle: Handle, text : &mut String, width: Width) {
+fn walk(handle: &Handle, text : &mut String, width: Width) {
     let mut doc_state = HashSet::new();
-    if let Some(el_type) = get_august_element(handle, &mut doc_state) {
+    if let Some(el_type) = get_august_element(&handle, &mut doc_state) {
         match el_type {
             ElementType::Text(in_text, _, _) => text.push_str(&in_text),
             ElementType::Block(e) => text.push_str(&e.block_text(Some(width))),
@@ -764,11 +760,11 @@ pub fn convert(input: &str, width: Width) -> String {
     let parser = parse_document(RcDom::default(), Default::default());
     let dril = Tendril::from_str(input).unwrap();
     let dom = parser.one(dril);
-    convert_dom(dom, width)
+    convert_dom(&dom, width)
 }
 
-fn convert_dom(dom: RcDom, width: Width) -> String {
+fn convert_dom(dom: &RcDom, width: Width) -> String {
     let mut output = String::new();
-    walk(dom.document, &mut output, width);
+    walk(&dom.document, &mut output, width);
     output
 }

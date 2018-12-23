@@ -17,6 +17,6 @@ fn main() -> io::Result<()> {
     inlock.read_to_string(&mut buffer)?;
     let stdout = io::stdout();
     let mut outlock = stdout.lock();
-    outlock.write(august::convert(buffer.as_str(), width).as_bytes())?;
+    outlock.write_all(august::convert(buffer.as_str(), width).as_bytes())?;
     Ok(())
 }
