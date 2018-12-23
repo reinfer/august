@@ -24,7 +24,7 @@ lazy_static! {
 const COLUMN_SEP: &str = "  ";
 const LINE_SEP: &str = "\n";
 
-type Width = usize;
+pub type Width = usize;
 
 struct SizeHint {
     width: Width,
