@@ -1,11 +1,11 @@
 [package]
 name = "august"
 description = "A crate & program for converting HTML to plain text."
-version = "0.1.1"
+version = "2.0.0"
 license = "LGPL-3.0-or-later"
-homepage = "https://gitlab.com/alantrick/august-rust/"
+homepage = "https://gitlab.com/alantrick/august/"
 authors = ["Alan Trick <me@alantrick.ca>"]
-repository = "https://gitlab.com/alantrick/august-rust/"
+repository = "https://gitlab.com/alantrick/august/"
 keywords = ["text", "html", "converter"]
 categories = ["text-processing"]
 edition = '2018'
