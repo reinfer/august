@@ -15,8 +15,7 @@ fn test_sample(html_path: &Path, txt_path: &Path) {
     let mut txt_contents = String::new();
     txt_file.read_to_string(&mut txt_contents).expect(
         "Unable to read text sample");
-    println!("{}", august::convert(html_contents.as_str(), 79));
-    assert_eq!(txt_contents, august::convert(html_contents.as_str(), 79))
+    assert_eq!(august::convert(html_contents.as_str(), 79), txt_contents)
 }
 
 #[test]
@@ -51,6 +50,13 @@ fn test_inline() {
 fn test_invoice() {
     let html_path = Path::new("tests/samples/invoice.html");
     let txt_path = Path::new("tests/samples/invoice.txt");
+    test_sample(&html_path, &txt_path);
+}
+
+#[test]
+fn test_pre() {
+    let html_path = Path::new("tests/samples/pre.html");
+    let txt_path = Path::new("tests/samples/pre.txt");
     test_sample(&html_path, &txt_path);
 }
 

@@ -21,6 +21,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 
 lazy_static! {
+    static ref NEWLINE_EDGES: Regex = Regex::new("(^\\r?\\n?)|(\\r?\\n?$)").unwrap();
     static ref WHITESPACE_AFFIX: Regex = Regex::new("\\s+").unwrap();
     static ref WHITESPACE_PREFIX: Regex = Regex::new("^\\s+").unwrap();
     static ref WHITESPACE_SUFFIX: Regex = Regex::new("\\s+$").unwrap();
@@ -38,13 +39,20 @@ struct SizeHint {
 struct ElementData {
     attrs: Vec<Attribute>,
     children: Vec<ElementType>,
+    style: StyleData,
 }
+
+#[derive(Copy, Clone)]
+struct StyleData {
+    preserve_whitespace: bool,
+}
+
 
 macro_rules! formatted_element {
     ($fmt:expr) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text(Cow::from(format!($fmt, text)))
+            ElementType::from_text(Cow::from(format!($fmt, text)), &element.style)
         }
     };
 }
@@ -53,7 +61,7 @@ macro_rules! fn_element {
     ($fname:ident) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text(Cow::from($fname(&text)))
+            ElementType::from_text(Cow::from($fname(&text)), &element.style)
         }
     };
 }
@@ -79,7 +87,7 @@ fn uppercase (text: &str) -> String {
 }
 
 fn plain_element(element: &ElementData, _: &mut DocState) -> ElementType {
-    ElementType::from_text(Cow::from(element.get_text()))
+    ElementType::from_text(Cow::from(element.get_text()), &element.style)
 }
 
 
@@ -98,7 +106,7 @@ fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
             }
         }
     };
-    ElementType::from_text(Cow::from(text))
+    ElementType::from_text(Cow::from(text), &element.style)
 }
 
 fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType {
@@ -116,7 +124,7 @@ fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType 
             }
         }
     };
-    ElementType::from_text(Cow::from(text))
+    ElementType::from_text(Cow::from(text), &element.style)
 }
 
 fn img_element(element: &ElementData, _: &mut DocState) -> ElementType {
@@ -125,7 +133,7 @@ fn img_element(element: &ElementData, _: &mut DocState) -> ElementType {
             Some(x) => Cow::from(x.to_string()),
             None => Cow::from(""),
         }
-    )
+    , &element.style)
 }
 
 fn input_element(element: &ElementData, _: &mut DocState) -> ElementType {
@@ -140,7 +148,7 @@ fn input_element(element: &ElementData, _: &mut DocState) -> ElementType {
             },
             None => Cow::from("[]"),
         }
-    )
+    , &element.style)
 }
 
 fn br_element(_: &ElementData, _: &mut DocState) -> ElementType {
@@ -221,6 +229,7 @@ impl ItemizedData {
 enum BlockType {
     Block,
     Header,
+    Pre,
     Quote,
     Table,
     TPart,
@@ -231,16 +240,9 @@ enum BlockType {
     Rule,
 }
 
-struct Block {
-    tag: BlockType,
-    attrs: Vec<Attribute>,
-    children: Vec<ElementType>,
-    item_data: ItemizedData,
-}
-
-impl Block {
-    fn from_tag_name(tag_name: &str, attrs: Vec<Attribute>, children: Vec<ElementType>) -> Option<Block> {
-        let tag = match tag_name {
+impl BlockType {
+    fn from_tag_name(tag_name: &str) -> Option<BlockType> {
+         match tag_name {
             // root elements
             "html" => Some(BlockType::Block),
             "body" => Some(BlockType::Block),
@@ -272,7 +274,7 @@ impl Block {
             "li" => Some(BlockType::ListItem),
             "ol" => Some(BlockType::OList),
             "p" => Some(BlockType::Block),
-            // "pre" => Some(BlockType::Pre), TODO: implement
+            "pre" => Some(BlockType::Pre),
             "ul" => Some(BlockType::UList),
             // table
             "caption" => Some(BlockType::Block),
@@ -328,20 +330,34 @@ impl Block {
             "template" => Some(BlockType::Block),
 
             _ => None,
-        };
-        match tag {
-            Some(tag) => Some(Block::from_data(tag, attrs, children)),
-            None => None,
         }
     }
 
-    fn from_data(tag: BlockType, attrs: Vec<Attribute>, mut children: Vec<ElementType>) -> Block {
-        if let BlockType::OList = tag {
+    fn get_style(&self, style: StyleData) -> StyleData {
+        match self {
+            BlockType::Pre => style.set_preserve_whitespace(),
+            _ => style,
+        }
+    }
+}
+
+struct Block {
+    block_type: BlockType,
+    style: StyleData,
+    attrs: Vec<Attribute>,
+    children: Vec<ElementType>,
+    item_data: ItemizedData,
+}
+
+impl Block {
+
+    fn from_data(block_type: BlockType, style: StyleData, attrs: Vec<Attribute>, mut children: Vec<ElementType>) -> Block {
+        if let BlockType::OList = block_type {
             let mut total = 0;
 
             for child in children.iter() {
                 if let ElementType::Block(el) = child {
-                    if let BlockType::ListItem = el.tag {
+                    if let BlockType::ListItem = el.block_type {
                         total += 1;
                     }
                 }
@@ -351,25 +367,25 @@ impl Block {
             for child in children.iter_mut() {
                 if let ElementType::Block(el) = child {
                     count += 1;
-                    if let BlockType::ListItem = el.tag {
+                    if let BlockType::ListItem = el.block_type {
                         el.item_data.set_ordering(count, count_length);
                     }
                 }
             }
         }
-        Block { tag, attrs, children, item_data: ItemizedData::new() }
+        Block { block_type, style, attrs, children, item_data: ItemizedData::new() }
     }
 
     fn block_text(&self, width: Option<Width>) -> String {
-        if let BlockType::Rule = self.tag {
+        if let BlockType::Rule = self.block_type {
             "-".repeat(width.unwrap_or(3))
         } else {
             let data = match width {
                 Some(w) => Some(self.get_block_data(w)),
                 None => None,
             };
-            let result = generic_block_text(&self.children, &data);
-            if let BlockType::Header = self.tag {
+            let result = generic_block_text(&self.children, &self.style, &data);
+            if let BlockType::Header = self.block_type {
                 result.to_uppercase()
             } else {
                 result
@@ -388,7 +404,7 @@ impl Block {
 
 
     fn get_child_block_sep(&self) -> &str {
-        match self.tag {
+        match self.block_type {
             BlockType::OList => "\n",
             BlockType::UList => "\n",
             BlockType::Quote => "\n>\n",
@@ -397,7 +413,7 @@ impl Block {
     }
 
     fn get_first_line_prefix(&self) -> String {
-        match self.tag {
+        match self.block_type {
             BlockType::ListItem => {
                 let id = &self.item_data;
                 if id.ordered {
@@ -412,7 +428,7 @@ impl Block {
     }
 
     fn get_next_line_prefix(&self) -> String {
-        match self.tag {
+        match self.block_type {
             BlockType::ListItem => {
                 let id = &self.item_data;
                 if id.ordered {
@@ -446,9 +462,13 @@ enum EdgeState {
 }
 
 impl EdgeState {
-    fn from(text: &str) -> (EdgeState, EdgeState) {
-        (EdgeState::from_re_find(WHITESPACE_PREFIX.find(text).is_some()),
-         EdgeState::from_re_find(WHITESPACE_SUFFIX.find(text).is_some()))
+    fn from(text: &str, style: &StyleData) -> (EdgeState, EdgeState) {
+        if style.preserve_whitespace {
+            (EdgeState::Blank, EdgeState::Blank)
+        } else {
+            (EdgeState::from_re_find(WHITESPACE_PREFIX.find(text).is_some()),
+            EdgeState::from_re_find(WHITESPACE_SUFFIX.find(text).is_some()))
+        }
     }
 
     fn from_re_find(b: bool) -> EdgeState {
@@ -490,7 +510,7 @@ impl ElementType {
                 SizeHint { width: text.as_str().graphemes(true).count() }
             },
             ElementType::Block(block) => {
-                if let BlockType::Rule = block.tag {
+                if let BlockType::Rule = block.block_type {
                     SizeHint { width: 3 }
                 } else {
                     let mut width = 0;
@@ -504,27 +524,34 @@ impl ElementType {
         }
     }
 
-    fn from_text(text: Cow<str>) -> ElementType {
-        let (prefix, suffix) = EdgeState::from(&text);
-        let sub = WHITESPACE_AFFIX.replace_all(text.trim(), " ");
+    fn from_text(text: Cow<str>, style: &StyleData) -> ElementType {
+        let (prefix, suffix) = EdgeState::from(&text, style);
+        let sub = if style.preserve_whitespace {
+            NEWLINE_EDGES.replace_all(&text, "")
+        } else {
+            WHITESPACE_AFFIX.replace_all(text.trim(), " ")
+        };
         ElementType::Text(sub.to_string(), prefix, suffix)
     }
 }
 
-fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<ElementType> {
+fn get_august_element(node: &Handle, style: StyleData, doc_state: &mut DocState) -> Option<ElementType> {
     match node.data {
         NodeData::Text { ref contents } => {
                 let b = contents.borrow();
                 match b.to_string().as_str() {
                     "" => None,
-                    _ => Some(ElementType::from_text(Cow::Borrowed(&b))),
+                    _ => Some(ElementType::from_text(Cow::Borrowed(&b), &style)),
                 }
             },
         NodeData::Element { ref name, ref attrs, .. } =>  {
                 // build vecs
+                let tag_name = &name.local[..];
+                let opt_block_type = BlockType::from_tag_name(tag_name);
+                let style = if let Some(ref block_type) = opt_block_type { block_type.get_style(style) } else { style };
                 let mut child_vec = Vec::new();
                 for child in node.children.borrow().iter() {
-                    if let Some(el) = get_august_element(&child.clone(), doc_state) {
+                    if let Some(el) = get_august_element(&child.clone(), style, doc_state) {
                         child_vec.push(el);
                     }
                 };
@@ -533,12 +560,11 @@ fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<Element
                     attrs_vec.push(attr.clone())
                 }
 
-                let tag_name = &name.local[..];
-                if let Some(func) = get_inline_fn(tag_name) {
-                    let data = ElementData::from(attrs_vec, child_vec);
+                if let Some(block_type) = opt_block_type {
+                    Some(ElementType::Block(Block::from_data(block_type, style, attrs_vec, child_vec)))
+                } else if let Some(func) = get_inline_fn(tag_name) {
+                    let data = ElementData::from(attrs_vec, child_vec, style);
                     Some(func(&data, doc_state))
-                } else if let Some(block) = Block::from_tag_name(tag_name, attrs_vec, child_vec) {
-                    Some(ElementType::Block(block))
                 } else {
                     None
                 }
@@ -546,12 +572,11 @@ fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<Element
         NodeData::Document => {
             let mut child_vec = Vec::new();
             for child in node.children.borrow().iter() {
-                if let Some(el) = get_august_element(&child.clone(), doc_state) {
-                    child_vec.push(el);
+                if let Some(el) = get_august_element(&child.clone(), style, doc_state) { child_vec.push(el);
                 }
             };
             Some(ElementType::Block(Block::from_data(
-                BlockType::Block, Vec::new(), child_vec)))
+                BlockType::Block, style, Vec::new(), child_vec)))
         }
         _ => None,
     }
@@ -560,12 +585,13 @@ fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<Element
 impl ElementData {
     fn from(
             attrs: Vec<Attribute>,
-            children: Vec<ElementType>) -> ElementData {
-        ElementData { attrs, children }
+            children: Vec<ElementType>,
+            style: StyleData) -> ElementData {
+        ElementData { attrs, children, style }
     }
 
     fn get_text(&self) -> String {
-        generic_block_text(&self.children, &None)
+        generic_block_text(&self.children, &self.style, &None)
     }
 
     fn get_attr(&self, key: &str) -> Option<Tendril<UTF8>> {
@@ -579,6 +605,16 @@ impl ElementData {
         result
     }
 
+}
+
+impl StyleData {
+    fn new() -> StyleData {
+        StyleData { preserve_whitespace: false }
+    }
+
+    fn set_preserve_whitespace(&self) -> StyleData {
+        StyleData { preserve_whitespace: true }
+    }
 }
 
 struct BlockData<'a> {
@@ -601,6 +637,7 @@ impl<'a> BlockData<'a> {
 
 fn generic_block_text(
         children: &[ElementType],
+        _style: &StyleData,
         block_data: &Option<BlockData>) -> String {
 
     let mut blocks = Vec::new();
@@ -621,13 +658,13 @@ fn generic_block_text(
             },
             ElementType::Block(el) => {
                 if let Some(data) = &block_data {
-                    if last_inline_text.trim() != "" {
+                    if last_inline_text.trim() != "" { // TODO: trim?
                         let wrapper = textwrap::Wrapper::new(data.width); // TODO: cache?
                         let wrapped_lines = wrapper.wrap(&last_inline_text);
                         blocks.push(wrapped_lines.join(data.get_sep().as_str()));
                     }
                     let width = Some(data.get_sub_width());
-                    let text = if let BlockType::Table = el.tag {
+                    let text = if let BlockType::Table = el.block_type {
                         let column_widths = table_column_widths(&el.children);
                         let column_widths = recalculate_column_widths(&column_widths, data.width);
                         let rows = table_rows(el, width, &column_widths);
@@ -696,7 +733,7 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
     match row {
         ElementType::Text(_, _, _) => vec!(vec!(Ratio::new(row.size_hint().width, 1))),
         ElementType::Block(block) => {
-            match block.tag {
+            match block.block_type {
                 BlockType::TPart => {
                     let mut result = Vec::new();
                     for child in block.children.iter() {
@@ -735,7 +772,7 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) 
         match maybe_row {
             ElementType::Text(text, _, _) => rows.push(text.to_owned()),
             ElementType::Block(block) => {
-                match block.tag {
+                match block.block_type {
                     BlockType::TPart => {
                         let inner_rows = table_rows(block, max_width, column_widths);
                         rows.extend(inner_rows);
@@ -885,7 +922,7 @@ fn test_long_recalculate2() {
 
 fn walk(handle: &Handle, text : &mut String, width: Width) {
     let mut doc_state = HashSet::new();
-    if let Some(el_type) = get_august_element(&handle, &mut doc_state) {
+    if let Some(el_type) = get_august_element(&handle, StyleData::new(), &mut doc_state) {
         match el_type {
             ElementType::Text(in_text, _, _) => text.push_str(&in_text),
             ElementType::Block(e) => text.push_str(&e.block_text(Some(width))),
