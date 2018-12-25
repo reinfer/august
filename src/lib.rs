@@ -4,14 +4,19 @@ use std::collections::HashSet;
 use std::default::Default;
 use std::string::String;
 use std::str::FromStr;
+use std::borrow::Cow;
 
 use regex::Regex;
 use textwrap;
 use num_rational::Ratio;
 use num_traits::Zero;
 use itertools::Itertools;
-use html5ever::{parse_document, rcdom::{NodeData, RcDom, Handle}};
-use html5ever::{interface::Attribute, tendril::{Tendril, TendrilSink}};
+use html5ever::{
+    parse_document,
+    rcdom::{NodeData, RcDom, Handle},
+    interface::Attribute,
+    tendril::{{Tendril, TendrilSink},fmt::UTF8},
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 
@@ -39,7 +44,7 @@ macro_rules! formatted_element {
     ($fmt:expr) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text(format!($fmt, text).as_str())
+            ElementType::from_text(Cow::from(format!($fmt, text)))
         }
     };
 }
@@ -48,7 +53,7 @@ macro_rules! fn_element {
     ($fname:ident) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text($fname(&text).as_str())
+            ElementType::from_text(Cow::from($fname(&text)))
         }
     };
 }
@@ -69,6 +74,14 @@ fn test_strike() {
     assert_eq!(output, strike(&input));
 }
 
+fn uppercase (text: &str) -> String {
+    text.to_ascii_uppercase()
+}
+
+fn plain_element(element: &ElementData, _: &mut DocState) -> ElementType {
+    ElementType::from_text(Cow::from(element.get_text()))
+}
+
 
 fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
     let text = element.get_text();
@@ -85,7 +98,7 @@ fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
             }
         }
     };
-    ElementType::from_text(text.as_str())
+    ElementType::from_text(Cow::from(text))
 }
 
 fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType {
@@ -103,37 +116,87 @@ fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType 
             }
         }
     };
-    ElementType::from_text(text.as_str())
+    ElementType::from_text(Cow::from(text))
 }
 
 fn img_element(element: &ElementData, _: &mut DocState) -> ElementType {
-    if let Some(alt) = element.get_attr("alt") {
-        ElementType::from_text(alt.as_str())
-    } else {
-        ElementType::from_text("")
-    }
+    ElementType::from_text(
+        match element.get_attr("alt") {
+            Some(x) => Cow::from(x.to_string()),
+            None => Cow::from(""),
+        }
+    )
+}
+
+fn input_element(element: &ElementData, _: &mut DocState) -> ElementType {
+    ElementType::from_text(
+        match element.get_attr("alt") {
+            Some(x) => {
+                let mut result = String::with_capacity(x.len() + 2);
+                result.push('[');
+                result.push_str(&x[..]);
+                result.push(']');
+                Cow::from(result)
+            },
+            None => Cow::from("[]"),
+        }
+    )
 }
 
 fn br_element(_: &ElementData, _: &mut DocState) -> ElementType {
     ElementType::Text("\n".to_owned(), EdgeState::Trim, EdgeState::Trim)
 }
 
+
 type DocState = HashSet<String>;
 type InlineFn = fn(&ElementData, &mut DocState) -> ElementType;
 
 fn get_inline_fn(tag_name: &str) -> Option<InlineFn> {
     match tag_name {
-        "span" => Some(formatted_element!("{}")),
-        "b" => Some(formatted_element!("*{}*")),
-        "strong" => Some(formatted_element!("*{}*")),
-        "i" => Some(formatted_element!("/{}/")),
-        "em" => Some(formatted_element!("/{}/")),
-        "u" => Some(formatted_element!("_{}_")),
-        "s" => Some(fn_element!(strike)),
+        // textual
         "a" => Some(a_element),
         "abbr" => Some(abbr_element),
-        "img" => Some(img_element),
+        "b" => Some(formatted_element!("*{}*")),
+        "bdi" => Some(plain_element), // no idea how to support this
+        "bdo" => Some(plain_element), // TODO: we can support this
         "br" => Some(br_element),
+        "cite" => Some(plain_element),
+        "code" => Some(formatted_element!("`{}`")),
+        "data" => Some(plain_element),
+        "dfn" => Some(formatted_element!("/{}/")),
+        "em" => Some(formatted_element!("/{}/")),
+        "i" => Some(formatted_element!("/{}/")),
+        "kbd" => Some(fn_element!(uppercase)),
+        "mark" => Some(formatted_element!(">{}<")),
+        "q" => Some(formatted_element!("“{}”")),
+        "rb" => Some(plain_element),
+        "rp" => Some(plain_element),
+        "rt" => Some(plain_element),
+        "rtc" => Some(plain_element),
+        "ruby" => Some(plain_element),
+        "s" => Some(fn_element!(strike)),
+        "samp" => Some(formatted_element!("“{}”")),
+        "small" => Some(plain_element), // no good way to support this
+        "span" => Some(plain_element),
+        "strong" => Some(formatted_element!("*{}*")),
+        "sup" => Some(plain_element), // TODO: we can support this
+        "sub" => Some(plain_element), // TODO: we can support this
+        "time" => Some(plain_element),
+        "tt" => Some(plain_element),
+        "u" => Some(formatted_element!("_{}_")), // TODO: we can do better
+        "var" => Some(formatted_element!("`{}`")),
+        // intentionally ignoring "wbr"
+        // multimedia/images
+        "img" => Some(img_element),
+        // edits
+        "del" => Some(fn_element!(strike)),
+        "ins" => Some(plain_element),
+        // forms
+        "input" => Some(input_element),
+        "label" => Some(plain_element),
+        "select" => Some(input_element),
+
+        // try block
         _ => None,
     }
 }
@@ -178,34 +241,93 @@ struct Block {
 impl Block {
     fn from_tag_name(tag_name: &str, attrs: Vec<Attribute>, children: Vec<ElementType>) -> Option<Block> {
         let tag = match tag_name {
-            "div" => Some(BlockType::Block),
-            "p" => Some(BlockType::Block),
-            "td" => Some(BlockType::Block),
+            // root elements
+            "html" => Some(BlockType::Block),
+            "body" => Some(BlockType::Block),
+            //sectioning
+            "address" => Some(BlockType::Block),
+            "article" => Some(BlockType::Block),
+            "aside" => Some(BlockType::Block),
+            "footer" => Some(BlockType::Block),
+            "header" => Some(BlockType::Block),
             "h1" => Some(BlockType::Header),
             "h2" => Some(BlockType::Header),
             "h3" => Some(BlockType::Header),
             "h4" => Some(BlockType::Header),
             "h5" => Some(BlockType::Header),
             "h6" => Some(BlockType::Header),
-            "th" => Some(BlockType::Header),
+            "hgroup" => Some(BlockType::Block),
+            "main" => Some(BlockType::Block),
+            "nav" => Some(BlockType::Block),
+            "section" => Some(BlockType::Block),
+            // text content
+            "blockquote" => Some(BlockType::Quote),
+            "dd" => Some(BlockType::Block),
+            "div" => Some(BlockType::Block),
+            "dl" => Some(BlockType::Block),
+            "dt" => Some(BlockType::Block),
+            "figcaption" => Some(BlockType::Block),
+            "figure" => Some(BlockType::Block),
             "hr" => Some(BlockType::Rule),
+            "li" => Some(BlockType::ListItem),
+            "ol" => Some(BlockType::OList),
+            "p" => Some(BlockType::Block),
+            // "pre" => Some(BlockType::Pre), TODO: implement
+            "ul" => Some(BlockType::UList),
+            // table
+            "caption" => Some(BlockType::Block),
+            "col" => None,
+            "colgroup" => None,
             "table" => Some(BlockType::Table),
             "tbody" => Some(BlockType::TPart),
-            "thead" => Some(BlockType::TPart),
+            "td" => Some(BlockType::Block),
             "tfoot" => Some(BlockType::TPart),
+            "th" => Some(BlockType::Header),
+            "thead" => Some(BlockType::TPart),
             "tr" => Some(BlockType::TRow),
-            "ul" => Some(BlockType::UList),
-            "ol" => Some(BlockType::OList),
-            "li" => Some(BlockType::ListItem),
-            "blockquote" => Some(BlockType::Quote),
+            // document metadata
+            "base" => None,
             "head" => None,
+            "link" => None,
             "meta" => None,
-            "title" => None,
-            "script" => None,
             "style" => None,
-            "colgroup" => None,
-            "col" => None,
-            _ => Some(BlockType::Block),
+            "title" => None,
+            // media, this is good enough, img is inline
+            "video" => Some(BlockType::Block),
+            "area" => None,
+            "map" => None,
+            "track" => None,
+            // embedded
+            "picture" => Some(BlockType::Block),
+            "source" => None,
+            "iframe" => None,
+            // scripting
+            "canvas" => None,
+            "noscript" => Some(BlockType::Block),
+            "script" => None,
+            // forms
+            "button" => None,
+            "datalist" => None,
+            "fieldset" => Some(BlockType::Block),
+            "form" => Some(BlockType::Block),
+            "legend" => Some(BlockType::Block),
+            "meter" => None,
+            "optgroup" => None,
+            "option" => None,
+            "output" => None,
+            "progress" => None,
+            "textarea" => Some(BlockType::Block),
+            // interactive
+            "details" => Some(BlockType::Block),
+            "dialog" => Some(BlockType::Block),
+            "menu" => None,
+            "menuitem" => None,
+            "summary" => Some(BlockType::Block),
+            // web components
+            "slot" => Some(BlockType::Block),
+            "template" => Some(BlockType::Block),
+
+            _ => None,
         };
         match tag {
             Some(tag) => Some(Block::from_data(tag, attrs, children)),
@@ -304,11 +426,11 @@ impl Block {
         }
     }
 
-    fn get_attr(&self, key: &str) -> Option<String> {
-        let mut result: Option<String> = None;
+    fn get_attr(&self, key: &str) -> Option<Tendril<UTF8>> {
+        let mut result: Option<Tendril<UTF8>> = None;
         for attr in self.attrs.iter() {
             if &attr.name.local[..] == key {
-                result = Some(String::from(attr.value.clone()));
+                result = Some(attr.value.clone());
                 break;
             }
         }
@@ -382,8 +504,8 @@ impl ElementType {
         }
     }
 
-    fn from_text(text: &str) -> ElementType {
-        let (prefix, suffix) = EdgeState::from(text);
+    fn from_text(text: Cow<str>) -> ElementType {
+        let (prefix, suffix) = EdgeState::from(&text);
         let sub = WHITESPACE_AFFIX.replace_all(text.trim(), " ");
         ElementType::Text(sub.to_string(), prefix, suffix)
     }
@@ -391,17 +513,14 @@ impl ElementType {
 
 fn get_august_element(node: &Handle, doc_state: &mut DocState) -> Option<ElementType> {
     match node.data {
-        NodeData::Text { ref contents }
-            => {
+        NodeData::Text { ref contents } => {
                 let b = contents.borrow();
                 match b.to_string().as_str() {
                     "" => None,
-                    _ => Some(ElementType::from_text(
-                        b.clone().to_string().as_str())),
+                    _ => Some(ElementType::from_text(Cow::Borrowed(&b))),
                 }
-                },
-        NodeData::Element { ref name, ref attrs, .. }
-            =>  {
+            },
+        NodeData::Element { ref name, ref attrs, .. } =>  {
                 // build vecs
                 let mut child_vec = Vec::new();
                 for child in node.children.borrow().iter() {
@@ -449,11 +568,11 @@ impl ElementData {
         generic_block_text(&self.children, &None)
     }
 
-    fn get_attr(&self, key: &str) -> Option<String> {
-        let mut result: Option<String> = None;
+    fn get_attr(&self, key: &str) -> Option<Tendril<UTF8>> {
+        let mut result: Option<Tendril<UTF8>> = None;
         for attr in self.attrs.iter() {
             if &attr.name.local[..] == key {
-                result = Some(String::from(attr.value.clone()));
+                result = Some(attr.value.clone());
                 break;
             }
         }
