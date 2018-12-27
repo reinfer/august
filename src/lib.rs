@@ -30,21 +30,55 @@ lazy_static! {
 const COLUMN_SEP: &str = "  ";
 const LINE_SEP: &str = "\n";
 
+// Data structures for our virtual DOM
 pub type Width = usize;
 
-struct SizeHint {
-    width: Width,
-}
+type DocState = HashSet<String>;
+type StyleFn = fn(StyleData) -> StyleData;
+type ReplaceFn = fn(&ElementData, &mut DocState) -> VElementType;
 
 struct ElementData {
     attrs: Vec<Attribute>,
-    children: Vec<ElementType>,
+    children: Vec<VElementType>,
     style: StyleData,
 }
 
 #[derive(Copy, Clone)]
 struct StyleData {
     preserve_whitespace: bool,
+    underline: bool,
+    strike: bool,
+    uppercase: bool,
+}
+
+enum BlockType {
+    Block,
+    Quote,
+    Table,
+    TPart,
+    TRow,
+    UList,
+    OList,
+    ListItem(ItemizedData),
+    Rule,
+}
+
+struct Block {
+    block_type: BlockType,
+    data: ElementData,
+}
+
+// HTML -> our DOM mappings
+struct NodeMapping {
+    node_type: NodeType,
+    style: Option<StyleFn>,
+}
+
+enum NodeType {
+    Blank,
+    Replace(ReplaceFn),
+    Inline,
+    Block(BlockType),
 }
 
 
@@ -52,7 +86,7 @@ macro_rules! formatted_element {
     ($fmt:expr) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text(Cow::from(format!($fmt, text)), &element.style)
+            VElementType::from_text(format!($fmt, text).as_str(), element.style)
         }
     };
 }
@@ -61,18 +95,18 @@ macro_rules! fn_element {
     ($fname:ident) => {
         |element: &ElementData, _: &mut DocState| {
             let text = element.get_text();
-            ElementType::from_text(Cow::from($fname(&text)), &element.style)
+            VElementType::from_text(&$fname(text.as_str()), element.style)
         }
     };
 }
 
-fn strike (text: &str) -> String {
+fn strike (text: &str) -> Cow<str> {
     let mut result = String::new();
     for graph in text.graphemes(true) {
         result.push_str(graph);
         result.push('\u{0336}');
     }
-    result
+    Cow::from(result)
 }
 
 #[test]
@@ -82,16 +116,28 @@ fn test_strike() {
     assert_eq!(output, strike(&input));
 }
 
-fn uppercase (text: &str) -> String {
-    text.to_ascii_uppercase()
+
+fn underline (text: &str) -> Cow<str> {
+    let mut result = String::new();
+    for graph in text.graphemes(true) {
+        result.push_str(graph);
+        result.push('\u{0332}');
+    }
+    Cow::from(result)
 }
 
-fn plain_element(element: &ElementData, _: &mut DocState) -> ElementType {
-    ElementType::from_text(Cow::from(element.get_text()), &element.style)
+#[test]
+fn test_underline() {
+    let output = "u̲n̲d̲e̲r̲l̲i̲n̲e̲";
+    let input = "underline";
+    assert_eq!(output, underline(&input));
 }
 
+fn uppercase (text: &str) -> Cow<str> {
+    Cow::from(text.to_uppercase())
+}
 
-fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
+fn a_element(element: &ElementData, _: &mut DocState) -> VElementType {
     let text = element.get_text();
     let href_opt = element.get_attr("href");
     let text = match href_opt {
@@ -106,10 +152,10 @@ fn a_element(element: &ElementData, _: &mut DocState) -> ElementType {
             }
         }
     };
-    ElementType::from_text(Cow::from(text), &element.style)
+    VElementType::from_text(&text, element.style)
 }
 
-fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType {
+fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> VElementType {
     let text = element.get_text();
     let title = element.get_attr("title");
     let text = match title {
@@ -124,21 +170,21 @@ fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> ElementType 
             }
         }
     };
-    ElementType::from_text(Cow::from(text), &element.style)
+    VElementType::from_text(&text, element.style)
 }
 
-fn img_element(element: &ElementData, _: &mut DocState) -> ElementType {
-    ElementType::from_text(
-        match element.get_attr("alt") {
+fn img_element(element: &ElementData, _: &mut DocState) -> VElementType {
+    VElementType::from_text(
+        &match element.get_attr("alt") {
             Some(x) => Cow::from(x.to_string()),
             None => Cow::from(""),
         }
-    , &element.style)
+    , element.style)
 }
 
-fn input_element(element: &ElementData, _: &mut DocState) -> ElementType {
-    ElementType::from_text(
-        match element.get_attr("alt") {
+fn input_element(element: &ElementData, _: &mut DocState) -> VElementType {
+    VElementType::from_text(
+        &match element.get_attr("alt") {
             Some(x) => {
                 let mut result = String::with_capacity(x.len() + 2);
                 result.push('[');
@@ -148,71 +194,183 @@ fn input_element(element: &ElementData, _: &mut DocState) -> ElementType {
             },
             None => Cow::from("[]"),
         }
-    , &element.style)
+    , element.style)
 }
 
-fn br_element(_: &ElementData, _: &mut DocState) -> ElementType {
-    ElementType::Text("\n".to_owned(), EdgeState::Trim, EdgeState::Trim)
+fn br_element(_: &ElementData, _: &mut DocState) -> VElementType {
+    VElementType::Text("\n".to_owned(), EdgeState::Trim, EdgeState::Trim)
 }
 
-
-type DocState = HashSet<String>;
-type InlineFn = fn(&ElementData, &mut DocState) -> ElementType;
-
-fn get_inline_fn(tag_name: &str) -> Option<InlineFn> {
-    match tag_name {
-        // textual
-        "a" => Some(a_element),
-        "abbr" => Some(abbr_element),
-        "b" => Some(formatted_element!("*{}*")),
-        "bdi" => Some(plain_element), // no idea how to support this
-        "bdo" => Some(plain_element), // TODO: we can support this
-        "br" => Some(br_element),
-        "cite" => Some(plain_element),
-        "code" => Some(formatted_element!("`{}`")),
-        "data" => Some(plain_element),
-        "dfn" => Some(formatted_element!("/{}/")),
-        "em" => Some(formatted_element!("/{}/")),
-        "i" => Some(formatted_element!("/{}/")),
-        "kbd" => Some(fn_element!(uppercase)),
-        "mark" => Some(formatted_element!(">{}<")),
-        "q" => Some(formatted_element!("“{}”")),
-        "rb" => Some(plain_element),
-        "rp" => Some(plain_element),
-        "rt" => Some(plain_element),
-        "rtc" => Some(plain_element),
-        "ruby" => Some(plain_element),
-        "s" => Some(fn_element!(strike)),
-        "samp" => Some(formatted_element!("“{}”")),
-        "small" => Some(plain_element), // no good way to support this
-        "span" => Some(plain_element),
-        "strong" => Some(formatted_element!("*{}*")),
-        "sup" => Some(plain_element), // TODO: we can support this
-        "sub" => Some(plain_element), // TODO: we can support this
-        "time" => Some(plain_element),
-        "tt" => Some(plain_element),
-        "u" => Some(formatted_element!("_{}_")), // TODO: we can do better
-        "var" => Some(formatted_element!("`{}`")),
-        // intentionally ignoring "wbr"
-        // multimedia/images
-        "img" => Some(img_element),
-        // edits
-        "del" => Some(fn_element!(strike)),
-        "ins" => Some(plain_element),
-        // forms
-        "input" => Some(input_element),
-        "label" => Some(plain_element),
-        "select" => Some(input_element),
-
-        // try block
-        _ => None,
-    }
-}
 
 struct ItemizedData {
     ordered: bool,
     count: usize,
     count_length: usize,
+}
+
+impl NodeMapping {
+    fn with_replace(func: ReplaceFn) -> NodeMapping {
+        NodeMapping { node_type: NodeType::Replace(func), style: None }
+    }
+
+    fn with_block(block_type: BlockType) -> NodeMapping {
+        NodeMapping { node_type: NodeType::Block(block_type), style: None }
+    }
+
+    fn with_style(style: StyleFn) -> NodeMapping {
+        NodeMapping { node_type: NodeType::Inline, style: Some(style) }
+    }
+
+    fn plain() -> NodeMapping {
+        NodeMapping { node_type: NodeType::Inline, style: None }
+    }
+
+    fn blank() -> NodeMapping {
+        NodeMapping { node_type: NodeType::Blank, style: None }
+    }
+
+
+    fn get(tag_name: &str) -> NodeMapping {
+        let header_mapping = NodeMapping {
+            node_type: NodeType::Block(BlockType::Block),
+            style: Some(StyleData::set_uppercase),
+        };
+        match tag_name {
+            // root elements
+            "html" => NodeMapping::with_block(BlockType::Block),
+            "body" => NodeMapping::with_block(BlockType::Block),
+            //sectioning
+            "address" => NodeMapping::with_block(BlockType::Block),
+            "article" => NodeMapping::with_block(BlockType::Block),
+            "aside" => NodeMapping::with_block(BlockType::Block),
+            "footer" => NodeMapping::with_block(BlockType::Block),
+            "header" => NodeMapping::with_block(BlockType::Block),
+            "h1" => header_mapping,
+            "h2" => header_mapping,
+            "h3" => header_mapping,
+            "h4" => header_mapping,
+            "h5" => header_mapping,
+            "h6" => header_mapping,
+            "hgroup" => NodeMapping::with_block(BlockType::Block),
+            "main" => NodeMapping::with_block(BlockType::Block),
+            "nav" => NodeMapping::with_block(BlockType::Block),
+            "section" => NodeMapping::with_block(BlockType::Block),
+            // text content
+            "blockquote" => NodeMapping::with_block(BlockType::Quote),
+            "dd" => NodeMapping::with_block(BlockType::Block),
+            "div" => NodeMapping::with_block(BlockType::Block),
+            "dl" => NodeMapping::with_block(BlockType::Block),
+            "dt" => NodeMapping::with_block(BlockType::Block),
+            "figcaption" => NodeMapping::with_block(BlockType::Block),
+            "figure" => NodeMapping::with_block(BlockType::Block),
+            "hr" => NodeMapping::with_block(BlockType::Rule),
+            "li" => NodeMapping::with_block(
+                BlockType::ListItem(ItemizedData::new())),
+            "ol" => NodeMapping::with_block(BlockType::OList),
+            "p" => NodeMapping::with_block(BlockType::Block),
+            "pre" => NodeMapping {
+                node_type: NodeType::Block(BlockType::Block),
+                style: Some(StyleData::set_preserve_whitespace),
+            },
+            "ul" => NodeMapping::with_block(BlockType::UList),
+            // table
+            "caption" => NodeMapping::with_block(BlockType::Block),
+            "col" => NodeMapping::blank(),
+            "colgroup" => NodeMapping::blank(),
+            "table" => NodeMapping::with_block(BlockType::Table),
+            "tbody" => NodeMapping::with_block(BlockType::TPart),
+            "td" => NodeMapping::with_block(BlockType::Block),
+            "tfoot" => NodeMapping::with_block(BlockType::TPart),
+            "th" => header_mapping,
+            "thead" => NodeMapping::with_block(BlockType::TPart),
+            "tr" => NodeMapping::with_block(BlockType::TRow),
+            // document metadata
+            "base" => NodeMapping::blank(),
+            "head" => NodeMapping::blank(),
+            "link" => NodeMapping::blank(),
+            "meta" => NodeMapping::blank(),
+            "style" => NodeMapping::blank(),
+            "title" => NodeMapping::blank(),
+            // media, this is good enough, img is inline
+            "video" => NodeMapping::with_block(BlockType::Block),
+            "area" => NodeMapping::blank(),
+            "map" => NodeMapping::blank(),
+            "track" => NodeMapping::blank(),
+            // embedded
+            "picture" => NodeMapping::with_block(BlockType::Block),
+            "source" => NodeMapping::blank(),
+            "iframe" => NodeMapping::blank(),
+            // scripting
+            "canvas" => NodeMapping::blank(),
+            "noscript" => NodeMapping::with_block(BlockType::Block),
+            "script" => NodeMapping::blank(),
+            // forms
+            "button" => NodeMapping::blank(),
+            "datalist" => NodeMapping::blank(),
+            "fieldset" => NodeMapping::with_block(BlockType::Block),
+            "form" => NodeMapping::with_block(BlockType::Block),
+            "legend" => NodeMapping::with_block(BlockType::Block),
+            "meter" => NodeMapping::blank(),
+            "optgroup" => NodeMapping::blank(),
+            "option" => NodeMapping::blank(),
+            "output" => NodeMapping::blank(),
+            "progress" => NodeMapping::blank(),
+            "textarea" => NodeMapping::with_block(BlockType::Block),
+            // interactive
+            "details" => NodeMapping::with_block(BlockType::Block),
+            "dialog" => NodeMapping::with_block(BlockType::Block),
+            "menu" => NodeMapping::blank(),
+            "menuitem" => NodeMapping::blank(),
+            "summary" => NodeMapping::with_block(BlockType::Block),
+            // web components
+            "slot" => NodeMapping::with_block(BlockType::Block),
+            "template" => NodeMapping::with_block(BlockType::Block),
+            // textual
+            "a" => NodeMapping::with_replace(a_element),
+            "abbr" => NodeMapping::with_replace(abbr_element),
+            "b" => NodeMapping::with_replace(formatted_element!("*{}*")),
+            "bdi" => NodeMapping::plain(), // no idea how to support this
+            "bdo" => NodeMapping::plain(), // TODO: we can support this
+            "br" => NodeMapping::with_replace(br_element),
+            "cite" => NodeMapping::plain(),
+            "code" => NodeMapping::with_replace(formatted_element!("`{}`")),
+            "data" => NodeMapping::plain(),
+            "dfn" => NodeMapping::with_replace(formatted_element!("/{}/")),
+            "em" => NodeMapping::with_replace(formatted_element!("/{}/")),
+            "i" => NodeMapping::with_replace(formatted_element!("/{}/")),
+            "kbd" => NodeMapping::with_style(StyleData::set_uppercase),
+            "mark" => NodeMapping::with_replace(formatted_element!(">{}<")),
+            "q" => NodeMapping::with_replace(formatted_element!("“{}”")),
+            "rb" => NodeMapping::plain(),
+            "rp" => NodeMapping::plain(),
+            "rt" => NodeMapping::plain(),
+            "rtc" => NodeMapping::plain(),
+            "ruby" => NodeMapping::plain(),
+            "s" => NodeMapping::with_style(StyleData::set_strike),
+            "samp" => NodeMapping::with_replace(formatted_element!("“{}”")),
+            "small" => NodeMapping::plain(), // no good way to support this
+            "span" => NodeMapping::plain(),
+            "strong" => NodeMapping::with_replace(formatted_element!("*{}*")),
+            "sup" => NodeMapping::plain(), // TODO: we can support this
+            "sub" => NodeMapping::plain(), // TODO: we can support this
+            "time" => NodeMapping::plain(),
+            "tt" => NodeMapping::plain(),
+            "var" => NodeMapping::with_replace(formatted_element!("`{}`")),
+            // intentionally ignoring "wbr"
+            // multimedia/images
+            "img" => NodeMapping::with_replace(img_element),
+            // edits
+            "del" => NodeMapping::with_replace(fn_element!(strike)),
+            "ins" => NodeMapping::plain(),
+            // forms
+            "input" => NodeMapping::with_replace(input_element),
+            "label" => NodeMapping::plain(),
+            "select" => NodeMapping::with_replace(input_element),
+            "u" => NodeMapping::with_style(StyleData::set_underline),
+            // By default we just treat things as plain "inline"
+            _ => NodeMapping::plain(),
+        }
+    }
 }
 
 impl ItemizedData {
@@ -226,154 +384,32 @@ impl ItemizedData {
     }
 }
 
-enum BlockType {
-    Block,
-    Header,
-    Pre,
-    Quote,
-    Table,
-    TPart,
-    TRow,
-    UList,
-    OList,
-    ListItem,
-    Rule,
-}
-
-impl BlockType {
-    fn from_tag_name(tag_name: &str) -> Option<BlockType> {
-         match tag_name {
-            // root elements
-            "html" => Some(BlockType::Block),
-            "body" => Some(BlockType::Block),
-            //sectioning
-            "address" => Some(BlockType::Block),
-            "article" => Some(BlockType::Block),
-            "aside" => Some(BlockType::Block),
-            "footer" => Some(BlockType::Block),
-            "header" => Some(BlockType::Block),
-            "h1" => Some(BlockType::Header),
-            "h2" => Some(BlockType::Header),
-            "h3" => Some(BlockType::Header),
-            "h4" => Some(BlockType::Header),
-            "h5" => Some(BlockType::Header),
-            "h6" => Some(BlockType::Header),
-            "hgroup" => Some(BlockType::Block),
-            "main" => Some(BlockType::Block),
-            "nav" => Some(BlockType::Block),
-            "section" => Some(BlockType::Block),
-            // text content
-            "blockquote" => Some(BlockType::Quote),
-            "dd" => Some(BlockType::Block),
-            "div" => Some(BlockType::Block),
-            "dl" => Some(BlockType::Block),
-            "dt" => Some(BlockType::Block),
-            "figcaption" => Some(BlockType::Block),
-            "figure" => Some(BlockType::Block),
-            "hr" => Some(BlockType::Rule),
-            "li" => Some(BlockType::ListItem),
-            "ol" => Some(BlockType::OList),
-            "p" => Some(BlockType::Block),
-            "pre" => Some(BlockType::Pre),
-            "ul" => Some(BlockType::UList),
-            // table
-            "caption" => Some(BlockType::Block),
-            "col" => None,
-            "colgroup" => None,
-            "table" => Some(BlockType::Table),
-            "tbody" => Some(BlockType::TPart),
-            "td" => Some(BlockType::Block),
-            "tfoot" => Some(BlockType::TPart),
-            "th" => Some(BlockType::Header),
-            "thead" => Some(BlockType::TPart),
-            "tr" => Some(BlockType::TRow),
-            // document metadata
-            "base" => None,
-            "head" => None,
-            "link" => None,
-            "meta" => None,
-            "style" => None,
-            "title" => None,
-            // media, this is good enough, img is inline
-            "video" => Some(BlockType::Block),
-            "area" => None,
-            "map" => None,
-            "track" => None,
-            // embedded
-            "picture" => Some(BlockType::Block),
-            "source" => None,
-            "iframe" => None,
-            // scripting
-            "canvas" => None,
-            "noscript" => Some(BlockType::Block),
-            "script" => None,
-            // forms
-            "button" => None,
-            "datalist" => None,
-            "fieldset" => Some(BlockType::Block),
-            "form" => Some(BlockType::Block),
-            "legend" => Some(BlockType::Block),
-            "meter" => None,
-            "optgroup" => None,
-            "option" => None,
-            "output" => None,
-            "progress" => None,
-            "textarea" => Some(BlockType::Block),
-            // interactive
-            "details" => Some(BlockType::Block),
-            "dialog" => Some(BlockType::Block),
-            "menu" => None,
-            "menuitem" => None,
-            "summary" => Some(BlockType::Block),
-            // web components
-            "slot" => Some(BlockType::Block),
-            "template" => Some(BlockType::Block),
-
-            _ => None,
-        }
-    }
-
-    fn get_style(&self, style: StyleData) -> StyleData {
-        match self {
-            BlockType::Pre => style.set_preserve_whitespace(),
-            _ => style,
-        }
-    }
-}
-
-struct Block {
-    block_type: BlockType,
-    style: StyleData,
-    attrs: Vec<Attribute>,
-    children: Vec<ElementType>,
-    item_data: ItemizedData,
-}
 
 impl Block {
 
-    fn from_data(block_type: BlockType, style: StyleData, attrs: Vec<Attribute>, mut children: Vec<ElementType>) -> Block {
+    fn from_data(block_type: BlockType, mut data: ElementData) -> Block {
         if let BlockType::OList = block_type {
             let mut total = 0;
 
-            for child in children.iter() {
-                if let ElementType::Block(el) = child {
-                    if let BlockType::ListItem = el.block_type {
+            for child in data.children.iter() {
+                if let VElementType::Block(el) = child {
+                    if let BlockType::ListItem(_) = el.block_type {
                         total += 1;
                     }
                 }
             }
             let count_length = format!("{}", total).len();
             let mut count = 0;
-            for child in children.iter_mut() {
-                if let ElementType::Block(el) = child {
-                    count += 1;
-                    if let BlockType::ListItem = el.block_type {
-                        el.item_data.set_ordering(count, count_length);
+            for child in data.children.iter_mut() {
+                if let VElementType::Block(el) = child {
+                    if let BlockType::ListItem(ref mut item_data) = &mut el.block_type {
+                        count += 1;
+                        item_data.set_ordering(count, count_length);
                     }
                 }
             }
         }
-        Block { block_type, style, attrs, children, item_data: ItemizedData::new() }
+        Block { block_type, data }
     }
 
     fn block_text(&self, width: Option<Width>) -> String {
@@ -384,12 +420,7 @@ impl Block {
                 Some(w) => Some(self.get_block_data(w)),
                 None => None,
             };
-            let result = generic_block_text(&self.children, &self.style, &data);
-            if let BlockType::Header = self.block_type {
-                result.to_uppercase()
-            } else {
-                result
-            }
+            generic_block_text(&self.data.children, &data)
         }
     }
 
@@ -413,9 +444,8 @@ impl Block {
     }
 
     fn get_first_line_prefix(&self) -> String {
-        match self.block_type {
-            BlockType::ListItem => {
-                let id = &self.item_data;
+        match &self.block_type {
+            BlockType::ListItem(id) => {
                 if id.ordered {
                     format!("{:>width$}. ", count=id.count, width=id.count_length)
                 } else {
@@ -428,9 +458,8 @@ impl Block {
     }
 
     fn get_next_line_prefix(&self) -> String {
-        match self.block_type {
-            BlockType::ListItem => {
-                let id = &self.item_data;
+        match &self.block_type {
+            BlockType::ListItem(id) => {
                 if id.ordered {
                     " ".repeat(id.count_length + 2)
                 } else {
@@ -443,14 +472,7 @@ impl Block {
     }
 
     fn get_attr(&self, key: &str) -> Option<Tendril<UTF8>> {
-        let mut result: Option<Tendril<UTF8>> = None;
-        for attr in self.attrs.iter() {
-            if &attr.name.local[..] == key {
-                result = Some(attr.value.clone());
-                break;
-            }
-        }
-        result
+        self.data.get_attr(key)
     }
 }
 
@@ -462,7 +484,7 @@ enum EdgeState {
 }
 
 impl EdgeState {
-    fn from(text: &str, style: &StyleData) -> (EdgeState, EdgeState) {
+    fn from(text: &str, style: StyleData) -> (EdgeState, EdgeState) {
         if style.preserve_whitespace {
             (EdgeState::Blank, EdgeState::Blank)
         } else {
@@ -490,108 +512,118 @@ impl EdgeState {
     }
 }
 
-enum ElementType {
+enum VElementType {
     Text(String, EdgeState, EdgeState),
     Block(Block),
 }
 
-impl ElementType {
+impl VElementType {
 
     fn is_empty(&self) -> bool {
         match self {
-            ElementType::Text(text, _, _) => text == "",
-            ElementType::Block(_) => false,
+            VElementType::Text(text, _, _) => text == "",
+            VElementType::Block(_) => false,
         }
     }
 
-    fn size_hint(&self) -> SizeHint {
+    fn width_hint(&self) -> Width {
         match self {
-            ElementType::Text(text, _, _) => {
-                SizeHint { width: text.as_str().graphemes(true).count() }
+            VElementType::Text(text, _, _) => {
+                text.as_str().graphemes(true).count()
             },
-            ElementType::Block(block) => {
+            VElementType::Block(block) => {
                 if let BlockType::Rule = block.block_type {
-                    SizeHint { width: 3 }
+                    3
                 } else {
                     let mut width = 0;
-                    for child in &block.children {
-                        let child_size = child.size_hint();
-                        if child_size.width > width { width = child_size.width }
+                    for child in &block.data.children {
+                        let child_size = child.width_hint();
+                        if child_size > width { width = child_size }
                     }
-                    SizeHint { width }
+                    width
                 }
             }
         }
     }
 
-    fn from_text(text: Cow<str>, style: &StyleData) -> ElementType {
+    fn from_text(text: &str, style: StyleData) -> VElementType {
         let (prefix, suffix) = EdgeState::from(&text, style);
-        let sub = if style.preserve_whitespace {
+        let text = if style.preserve_whitespace {
             NEWLINE_EDGES.replace_all(&text, "")
         } else {
             WHITESPACE_AFFIX.replace_all(text.trim(), " ")
         };
-        ElementType::Text(sub.to_string(), prefix, suffix)
+        let text = if style.underline { underline(&text) } else { text };
+        let text = if style.strike { strike(&text) } else { text };
+        let text = if style.uppercase { uppercase(&text) } else { text };
+        VElementType::Text(text.to_string(), prefix, suffix)
     }
 }
 
-fn get_august_element(node: &Handle, style: StyleData, doc_state: &mut DocState) -> Option<ElementType> {
+fn get_virtual_elements(node: &Handle, style: StyleData, doc_state: &mut DocState) -> Vec<VElementType> {
     match node.data {
         NodeData::Text { ref contents } => {
                 let b = contents.borrow();
                 match b.to_string().as_str() {
-                    "" => None,
-                    _ => Some(ElementType::from_text(Cow::Borrowed(&b), &style)),
+                    "" => vec![],
+                    _ => vec![VElementType::from_text(&b, style)],
                 }
             },
         NodeData::Element { ref name, ref attrs, .. } =>  {
                 // build vecs
                 let tag_name = &name.local[..];
-                let opt_block_type = BlockType::from_tag_name(tag_name);
-                let style = if let Some(ref block_type) = opt_block_type { block_type.get_style(style) } else { style };
+                let mapping = NodeMapping::get(tag_name);
+                let style = if let Some(s) = mapping.style { s(style) } else { style };
+
                 let mut child_vec = Vec::new();
                 for child in node.children.borrow().iter() {
-                    if let Some(el) = get_august_element(&child.clone(), style, doc_state) {
+                    for el in get_virtual_elements(&child.clone(), style, doc_state) {
                         child_vec.push(el);
                     }
                 };
+
                 let mut attrs_vec = Vec::new();
                 for attr in attrs.borrow().iter() {
                     attrs_vec.push(attr.clone())
                 }
 
-                if let Some(block_type) = opt_block_type {
-                    Some(ElementType::Block(Block::from_data(block_type, style, attrs_vec, child_vec)))
-                } else if let Some(func) = get_inline_fn(tag_name) {
-                    let data = ElementData::from(attrs_vec, child_vec, style);
-                    Some(func(&data, doc_state))
-                } else {
-                    None
+                match mapping.node_type {
+                    NodeType::Blank => vec![],
+                    NodeType::Inline => child_vec,
+                    NodeType::Replace(func) => {
+                        let data = ElementData::from(attrs_vec, child_vec, style);
+                        vec![func(&data, doc_state)]
+                    },
+                    NodeType::Block(block_type) => {
+                        let data = ElementData::from(attrs_vec, child_vec, style);
+                        vec![VElementType::Block(Block::from_data(block_type, data))]
+                    }
                 }
             },
         NodeData::Document => {
             let mut child_vec = Vec::new();
             for child in node.children.borrow().iter() {
-                if let Some(el) = get_august_element(&child.clone(), style, doc_state) { child_vec.push(el);
+                for el in get_virtual_elements(&child.clone(), style, doc_state) {
+                    child_vec.push(el);
                 }
             };
-            Some(ElementType::Block(Block::from_data(
-                BlockType::Block, style, Vec::new(), child_vec)))
+            let data = ElementData::from(vec![], child_vec, style);
+            vec![VElementType::Block(Block::from_data(BlockType::Block, data))]
         }
-        _ => None,
+        _ => vec![],
     }
 }
 
 impl ElementData {
     fn from(
             attrs: Vec<Attribute>,
-            children: Vec<ElementType>,
+            children: Vec<VElementType>,
             style: StyleData) -> ElementData {
         ElementData { attrs, children, style }
     }
 
     fn get_text(&self) -> String {
-        generic_block_text(&self.children, &self.style, &None)
+        generic_block_text(&self.children, &None)
     }
 
     fn get_attr(&self, key: &str) -> Option<Tendril<UTF8>> {
@@ -609,11 +641,40 @@ impl ElementData {
 
 impl StyleData {
     fn new() -> StyleData {
-        StyleData { preserve_whitespace: false }
+        StyleData {
+            preserve_whitespace: false,
+            underline: false,
+            strike: false,
+            uppercase: false,
+        }
     }
 
-    fn set_preserve_whitespace(&self) -> StyleData {
-        StyleData { preserve_whitespace: true }
+    fn set_strike(self) -> Self {
+        Self {
+            strike: true,
+            ..self
+        }
+    }
+
+    fn set_underline(self) -> Self {
+        Self {
+            underline: true,
+            ..self
+        }
+    }
+
+    fn set_preserve_whitespace(self) -> StyleData {
+        Self {
+            preserve_whitespace: true,
+            ..self
+        }
+    }
+
+    fn set_uppercase(self) -> StyleData {
+        Self {
+            uppercase: true,
+            ..self
+        }
     }
 }
 
@@ -636,8 +697,7 @@ impl<'a> BlockData<'a> {
 }
 
 fn generic_block_text(
-        children: &[ElementType],
-        _style: &StyleData,
+        children: &[VElementType],
         block_data: &Option<BlockData>) -> String {
 
     let mut blocks = Vec::new();
@@ -645,7 +705,7 @@ fn generic_block_text(
     let mut had_white_suffix = EdgeState::Trim;
     for child in children.iter() {
         match child {
-            ElementType::Text(text, prefix, suffix) => {
+            VElementType::Text(text, prefix, suffix) => {
                 if text == "" {
                     if let EdgeState::Blank = had_white_suffix {
                         had_white_suffix = EdgeState::White;
@@ -656,7 +716,7 @@ fn generic_block_text(
                     had_white_suffix = *suffix;
                 }
             },
-            ElementType::Block(el) => {
+            VElementType::Block(el) => {
                 if let Some(data) = &block_data {
                     if last_inline_text.trim() != "" { // TODO: trim?
                         let wrapper = textwrap::Wrapper::new(data.width); // TODO: cache?
@@ -665,7 +725,7 @@ fn generic_block_text(
                     }
                     let width = Some(data.get_sub_width());
                     let text = if let BlockType::Table = el.block_type {
-                        let column_widths = table_column_widths(&el.children);
+                        let column_widths = table_column_widths(&el.data.children);
                         let column_widths = recalculate_column_widths(&column_widths, data.width);
                         let rows = table_rows(el, width, &column_widths);
                         rows.iter().filter(|x| !x.is_empty()).join("\n")
@@ -709,7 +769,7 @@ fn generic_block_text(
     }
 }
 
-fn table_column_widths(rows: &[ElementType]) -> Vec<Ratio<Width>> {
+fn table_column_widths(rows: &[VElementType]) -> Vec<Ratio<Width>> {
     let mut result = Vec::new();
     for child in rows.iter() {
         let child_results = tr_column_widths(&child);
@@ -729,23 +789,23 @@ fn table_column_widths(rows: &[ElementType]) -> Vec<Ratio<Width>> {
     result
 }
 
-fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
+fn tr_column_widths(row: &VElementType) -> Vec<Vec<Ratio<Width>>> {
     match row {
-        ElementType::Text(_, _, _) => vec!(vec!(Ratio::new(row.size_hint().width, 1))),
-        ElementType::Block(block) => {
+        VElementType::Text(_, _, _) => vec!(vec!(Ratio::new(row.width_hint(), 1))),
+        VElementType::Block(block) => {
             match block.block_type {
                 BlockType::TPart => {
                     let mut result = Vec::new();
-                    for child in block.children.iter() {
+                    for child in block.data.children.iter() {
                         result.extend(tr_column_widths(&child));
                     }
                     result
                 }, BlockType::TRow => {
                     let mut result = Vec::new();
-                    for child in block.children.iter() {
+                    for child in block.data.children.iter() {
                         if child.is_empty() { continue; }
                         let span: Width = match child {
-                            ElementType::Block(block) => {
+                            VElementType::Block(block) => {
                                 match block.get_attr("colspan") {
                                     Some(s) => s.parse::<Width>().unwrap_or(1),
                                     None => 1,
@@ -754,11 +814,11 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
                             _ => 1
                         };
                         for _ in 0..span {
-                            result.push(Ratio::new(child.size_hint().width, span));
+                            result.push(Ratio::new(child.width_hint(), span));
                         }
                     }
                     vec!(result)
-                }, _ => vec!(vec!(Ratio::new(row.size_hint().width, 1))),
+                }, _ => vec!(vec!(Ratio::new(row.width_hint(), 1))),
 
             }
         }
@@ -767,11 +827,11 @@ fn tr_column_widths(row: &ElementType) -> Vec<Vec<Ratio<Width>>> {
 
 fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) -> Vec<String> {
     let mut rows = Vec::new();
-    for maybe_row in table.children.iter() {
+    for maybe_row in table.data.children.iter() {
         if maybe_row.is_empty() { continue; }
         match maybe_row {
-            ElementType::Text(text, _, _) => rows.push(text.to_owned()),
-            ElementType::Block(block) => {
+            VElementType::Text(text, _, _) => rows.push(text.to_owned()),
+            VElementType::Block(block) => {
                 match block.block_type {
                     BlockType::TPart => {
                         let inner_rows = table_rows(block, max_width, column_widths);
@@ -795,9 +855,9 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
         let mut cells = Vec::new();
         let mut idx = 0;
         let mut max_height = 0;
-        for child in row.children.iter() {
+        for child in row.data.children.iter() {
             if child.is_empty() { continue; }
-            let span = if let ElementType::Block(b) = child {
+            let span = if let VElementType::Block(b) = child {
                 match b.get_attr("colspan") {
                     Some(s) => s.parse::<Width>().unwrap_or(1),
                     None => 1,
@@ -810,8 +870,8 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
             let width = column_widths[idx..idx+span].iter().sum();
 
             let text = match child {
-                ElementType::Text(text, _, _) => text.to_owned() ,
-                ElementType::Block(b) => b.block_text(Some(width)),
+                VElementType::Text(text, _, _) => text.to_owned() ,
+                VElementType::Block(b) => b.block_text(Some(width)),
             };
 
             let height = text.lines().count();
@@ -922,10 +982,10 @@ fn test_long_recalculate2() {
 
 fn walk(handle: &Handle, text : &mut String, width: Width) {
     let mut doc_state = HashSet::new();
-    if let Some(el_type) = get_august_element(&handle, StyleData::new(), &mut doc_state) {
+    for el_type in get_virtual_elements(&handle, StyleData::new(), &mut doc_state) {
         match el_type {
-            ElementType::Text(in_text, _, _) => text.push_str(&in_text),
-            ElementType::Block(e) => text.push_str(&e.block_text(Some(width))),
+            VElementType::Text(in_text, _, _) => text.push_str(&in_text),
+            VElementType::Block(e) => text.push_str(&e.block_text(Some(width))),
         }
     }
 }
