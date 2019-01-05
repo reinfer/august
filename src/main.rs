@@ -1,16 +1,37 @@
 use argparse;
 use std::io::{self, Read, Write};
 
+const DEFAULT_WIDTH: august::Width = 79;
+
+fn default_width() -> august::Width {
+    if cfg!(feature = "term-size") {
+        if let Some((w, _)) = term_size::dimensions() {
+            w
+        } else {
+            DEFAULT_WIDTH
+        }
+    } else {
+        DEFAULT_WIDTH
+    }
+}
+
 fn main() -> io::Result<()> {
-    let mut width: august::Width = 79;
+    let mut width: Option<august::Width> = None;
     {
+
+        let width_text: &'static str = if cfg!(feature = "term-size") {
+                "Set document width, defaults to terminal width"
+            } else {
+                "Set document width, defaults to 79"
+            };
+
         let mut ap = argparse::ArgumentParser::new();
         ap.set_description("Convert an HTML document into plain text.");
         ap.refer(&mut width)
-            .add_option(&["-w", "--width"], argparse::Store,
-            "Set document width, defaults to 79");
+            .add_option(&["-w", "--width"], argparse::StoreOption, width_text);
         ap.parse_args_or_exit();
     }
+    let width = width.unwrap_or_else(default_width);
     let mut buffer = String::new();
     let stdin = io::stdin();
     let mut inlock = stdin.lock();

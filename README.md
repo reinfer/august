@@ -8,7 +8,7 @@ It is specifically intended for rendering HTML emails as text.
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-august = "*"
+august = "^1"
 ```
 
 and this to your code:
@@ -25,6 +25,13 @@ Hello
 
 /Here's some HTML!/
 ```
+
+## Command line program
+
+Cargo comes with a little command-line program `august` that reads
+HTML from stdin and prints text to stdout. Unless you’ve disabled the
+`term-size` feature, it uses the terminal width as the default width.
+You can override this by passing `-w WIDTH` as an argument.
 
 ## Known issues
 
