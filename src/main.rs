@@ -1,18 +1,22 @@
+
 use argparse;
 use std::io::{self, Read, Write};
 
+
 const DEFAULT_WIDTH: august::Width = 79;
 
+#[cfg(feature="term-size")]
 fn default_width() -> august::Width {
-    if cfg!(feature = "term-size") {
-        if let Some((w, _)) = term_size::dimensions() {
-            w
-        } else {
-            DEFAULT_WIDTH
-        }
+    if let Some((w, _)) = term_size::dimensions() {
+        w
     } else {
         DEFAULT_WIDTH
     }
+}
+
+#[cfg(not(feature="term-size"))]
+fn default_width() -> august::Width {
+    DEFAULT_WIDTH
 }
 
 fn main() -> io::Result<()> {
