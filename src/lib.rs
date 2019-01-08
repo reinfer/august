@@ -219,14 +219,14 @@ fn a_element(element: &ElementData, _: &mut DocState) -> VNodeType {
     let text = element.get_text();
     let href_opt = element.get_attr("href");
     let text = match href_opt {
-        None => text,
+        None => Cow::from(text),
         Some(x) => {
             if x.starts_with("mailto:") {
-                format!("{} <{}>", text, &x[7..])
+                Cow::from(format!("{} <{}>", text, &x[7..]))
             } else if x.starts_with("http:") || x.starts_with("https:") {
-                format!("{} ({})", text, &x)
+                Cow::from(format!("{} ({})", text, &x))
             } else {
-                text
+                Cow::from(text)
             }
         }
     };
@@ -238,14 +238,14 @@ fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> VNodeType {
     let text = element.get_text();
     let title = element.get_attr("title");
     let text = match title {
-        None => text,
+        None => Cow::from(text),
         Some(x) => {
             let key = format!("abbr_{}", text);
             if doc_state.contains(&key) {
-                text
+                Cow::from(text)
             } else {
                 doc_state.insert(key);
-                format!("{} ({})", text, &x)
+                Cow::from(format!("{} ({})", text, &x))
             }
         }
     };
@@ -500,9 +500,9 @@ impl Block {
         Block { block_type, data }
     }
 
-    fn block_text(&self, width: Option<Width>) -> String {
+    fn block_text<'a>(&self, width: Option<Width>) -> Cow<str> {
         if let BlockType::Rule = self.block_type {
-            "-".repeat(width.unwrap_or(3))
+            Cow::from("-".repeat(width.unwrap_or(3)))
         } else {
             let data = match width {
                 Some(w) => Some(self.get_block_data(w)),
@@ -712,7 +712,7 @@ impl ElementData {
     /// 
     /// Note that if there are child block elements, they will get
     /// displayed as if they were inline
-    fn get_text(&self) -> String {
+    fn get_text<'a> (&self) -> Cow<'a, str> {
         generic_block_text(&self.children, &None)
     }
 
@@ -798,9 +798,9 @@ impl<'a> BlockData<'a> {
 /// 
 /// If `block_data` is set, it will be rendered as a block. Otherwise
 /// it will be rendered inline.
-fn generic_block_text(
+fn generic_block_text<'a> (
         children: &[VNodeType],
-        block_data: &Option<BlockData>) -> String {
+        block_data: &Option<BlockData>) -> Cow<'a, str> {
 
     let mut blocks = Vec::new();
     let mut last_inline_text = String::new();
@@ -830,7 +830,7 @@ fn generic_block_text(
                         let column_widths = table_column_widths(&el.data.children);
                         let column_widths = recalculate_column_widths(&column_widths, data.width);
                         let rows = table_rows(el, width, &column_widths);
-                        rows.iter().filter(|x| !x.is_empty()).join("\n")
+                        Cow::from(rows.iter().filter(|x| !x.is_empty()).join("\n"))
                     } else {
                         el.block_text(width)
                     };
@@ -841,7 +841,7 @@ fn generic_block_text(
                     last_inline_text.clear();
                 } else {
                     last_inline_text.push_str(had_white_suffix.join_str(&EdgeState::Blank));
-                    last_inline_text.push_str(el.block_text(None).as_str())
+                    last_inline_text.push_str(&el.block_text(None))
                 }
                 had_white_suffix = EdgeState::Trim;
             },
@@ -863,9 +863,9 @@ fn generic_block_text(
             }
             blocks.push(format!("{}{}", data.first_line_prefix, wrapped_lines.join(data.get_sep().as_str())));
         }
-        blocks.join(data.child_block_sep)
+        Cow::from(blocks.join(data.child_block_sep))
     } else {
-        last_inline_text
+        Cow::from(last_inline_text)
     }
 }
 
@@ -943,7 +943,7 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) 
                     BlockType::TRow => {
                         rows.push(tr_text(&block, max_width, &column_widths))
                     },
-                    _ => rows.push(block.block_text(max_width))
+                    _ => rows.push(block.block_text(max_width).into())
                 }
             },
         }
@@ -954,7 +954,7 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) 
 /// Given a row and widths, return text for that row
 fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> String {
     if max_width.is_none() {
-        row.block_text(None)
+        row.block_text(None).into()
     } else {
         let mut cells = Vec::new();
         let mut idx = 0;
@@ -970,8 +970,8 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
 
             let width = column_widths[idx..idx+span].iter().sum();
             let text = match child {
-                VNodeType::Text(text, _, _) => text.to_owned() ,
-                VNodeType::Block(b) => b.block_text(Some(width)),
+                VNodeType::Text(ref text, _, _) => Cow::from(text),
+                VNodeType::Block(b) => b.block_text(Some(width))
             };
 
             let height = text.lines().count();
