@@ -52,8 +52,6 @@ use unicode_segmentation::UnicodeSegmentation;
 lazy_static! {
     static ref NEWLINE_EDGES: Regex = Regex::new("(^\\r?\\n?)|(\\r?\\n?$)").unwrap();
     static ref WHITESPACE_AFFIX: Regex = Regex::new("\\s+").unwrap();
-    static ref WHITESPACE_PREFIX: Regex = Regex::new("^\\s+").unwrap();
-    static ref WHITESPACE_SUFFIX: Regex = Regex::new("\\s+$").unwrap();
 }
 
 const COLUMN_SEP: &str = "  ";
@@ -572,13 +570,19 @@ impl EdgeState {
         if style.preserve_whitespace {
             (EdgeState::Blank, EdgeState::Blank)
         } else {
-            (EdgeState::from_re_find(WHITESPACE_PREFIX.find(text).is_some()),
-            EdgeState::from_re_find(WHITESPACE_SUFFIX.find(text).is_some()))
+            let mut iter = text.chars();
+            let first = iter.next();
+            let last = iter.rev().next();
+            (EdgeState::from_char(first), EdgeState::from_char(last))
         }
     }
 
-    fn from_re_find(b: bool) -> EdgeState {
-        if b { EdgeState::White } else { EdgeState::Blank }
+    fn from_char(letter: Option<char>) -> EdgeState {
+        match letter {
+            Some(c) => if c.is_whitespace() {
+                EdgeState::White } else { EdgeState::Blank },
+            None => EdgeState::Blank,
+        }
     }
 
     fn join_str(&self, other: &EdgeState) -> &str {
