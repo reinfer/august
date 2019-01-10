@@ -1,3 +1,6 @@
+/// Command line interface for August
+///
+/// Text goes into stdin,
 // use the system allocator so valgrind works
 use std::alloc::System;
 #[global_allocator]
@@ -6,10 +9,9 @@ static A: System = System;
 use argparse;
 use std::io;
 
-
 const DEFAULT_WIDTH: august::Width = 79;
 
-#[cfg(feature="term-size")]
+#[cfg(feature = "term-size")]
 fn default_width() -> august::Width {
     if let Some((w, _)) = term_size::dimensions() {
         w
@@ -18,7 +20,7 @@ fn default_width() -> august::Width {
     }
 }
 
-#[cfg(not(feature="term-size"))]
+#[cfg(not(feature = "term-size"))]
 fn default_width() -> august::Width {
     DEFAULT_WIDTH
 }
@@ -27,10 +29,10 @@ fn main() -> io::Result<()> {
     let mut width: Option<august::Width> = None;
     {
         let width_text: &'static str = if cfg!(feature = "term-size") {
-                "Set document width, defaults to terminal width"
-            } else {
-                "Set document width, defaults to 79"
-            };
+            "Set document width, defaults to terminal width"
+        } else {
+            "Set document width, defaults to 79"
+        };
 
         let mut ap = argparse::ArgumentParser::new();
         ap.set_description("Convert an HTML document into plain text.");

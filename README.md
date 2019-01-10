@@ -8,14 +8,14 @@ It is specifically intended for rendering HTML emails as text.
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-august = "^1"
+august = "^2"
 ```
 
 and this to your code:
 ```rust
 use august;
 
-let input = "<p>Hello</p><i>Here's some HTML!</i>"
+let input = "<p>Hello</p><i>Here's some HTML!</i>";
 println!("{}", august::convert(input, 79));
 ```
 

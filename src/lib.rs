@@ -1,12 +1,12 @@
 //!
 //! August is a library for converting HTML to plain text.
-//! 
+//!
 //! # Design
-//! 
+//!
 //! The main goal of this library is to provide readable and efficent
 //! results when converting HTML emails into text, and so it is designed
 //! with that in mind. For example
-//! 
+//!
 //! * There's no way to reliably convert the output of this program back
 //!   into HTML. Adding the extra markup for that impeeds readability and
 //!   isn’t useful in an email anyway.
@@ -15,41 +15,45 @@
 //!   patchy.
 //! * We try hard to get whitespace correct so you don't end up
 //!   withtextlikethis  or  like  this around element boundaries.
-//! 
+//!
 //! # Limitations
-//! 
+//!
 //! * Currently we don't support CSS at all
 //! * There are a few elements \<bdo\>, \<sup\>, and \<sub\> that we should
 //!   support but don’t.
 //! * We don’t support \<ruby\> and related elements. Ruby was intentionally
 //!   designed to fallback, so that’s probably fine.
-//! 
+//!
 //! # Usage
-//! 
+//!
 //! Just call the [`convert`](fn.convert.html) or
 //! [`convert_io`](fn.convert_io.html) functions.
 //!     
 
-#[macro_use] extern crate lazy_static;
+#[macro_use]
+extern crate lazy_static;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::default::Default;
-use std::string::String;
-use std::str::FromStr;
-use std::borrow::Cow;
 use std::io::{self, Read, Write};
+use std::str::FromStr;
+use std::string::String;
 
-use regex::Regex;
-use textwrap;
+use html5ever::{
+    interface::Attribute,
+    parse_document,
+    rcdom::{Handle, NodeData, RcDom},
+    tendril::{
+        fmt::UTF8,
+        {Tendril, TendrilSink},
+    },
+};
+use itertools::Itertools;
 use num_rational::Ratio;
 use num_traits::Zero;
-use itertools::Itertools;
-use html5ever::{
-    parse_document,
-    rcdom::{NodeData, RcDom, Handle},
-    interface::Attribute,
-    tendril::{{Tendril, TendrilSink},fmt::UTF8},
-};
+use regex::Regex;
+use textwrap;
 use unicode_segmentation::UnicodeSegmentation;
 
 lazy_static! {
@@ -65,16 +69,16 @@ pub type Width = usize;
 
 type DocState = HashSet<String>;
 /// A style transformation function
-/// 
+///
 /// We currently use these to create new `StyleData` objects
 /// to pass down to child elements for cascading.
 type StyleFn = fn(StyleData) -> StyleData;
 /// A text element replacement function
-/// 
+///
 /// For the most part these text replacement functions are just
 /// substituting one string for another. The slight difference
 /// is that they also set `EdgeState` values (as )
-/// 
+///
 type ReplaceFn = fn(&ElementData, &mut DocState) -> VNodeType;
 
 struct ElementData {
@@ -84,10 +88,10 @@ struct ElementData {
 }
 
 /// Struct for cascading style information as we render
-/// 
+///
 /// There should be a separate variable here for each
 /// type of style that August supports.
-/// 
+///
 /// Note that we currently cascade all styles all the time.
 /// This is fine for now because the styles we implement normally
 /// cascade, but it should change in the future.
@@ -100,11 +104,11 @@ struct StyleData {
 }
 
 /// Enumeration of the fundamental Block types
-/// 
+///
 /// For the most part, you can reduce each type of HTML element
 /// into a combination of `BlockType` and (optionally) some
 /// style transformation. For example, a `<pre>` element would
-/// be a `Block` `BlockType` and it uses the 
+/// be a `Block` `BlockType` and it uses the
 /// `StyleData::set_preserve_whitespace` style transformation.
 enum BlockType {
     /// Basic block type, most elements use this type
@@ -122,7 +126,7 @@ enum BlockType {
     /// Block type for <ol>
     OList,
     /// Block type for <li>
-    /// 
+    ///
     /// It contains extra data for tracking ordering and number.
     ListItem(ItemizedData),
     /// Block type for <hr>
@@ -146,16 +150,16 @@ enum ElementType {
     /// These elements are ignored when rendering
     Blank,
     /// These are replaced elements
-    /// 
+    ///
     /// In a replaced element the entire content of the element is
     /// replaced by some other content (whatever is dictated by `ReplaceFn`)
     Replace(ReplaceFn),
     /// Inline elements typically just contain text
-    /// 
+    ///
     /// They are displayed as-is, sometimes with some style transformations.
     Inline,
     /// A block element
-    /// 
+    ///
     /// Roughly speaking, block elements are displayed “in a block” (i.e.
     /// on their own lines). They can also have more complicated display
     /// rules (as is dictated by the `BlockType`)
@@ -163,7 +167,7 @@ enum ElementType {
 }
 
 /// Function for replacing an element via some sort of format string
-/// 
+///
 /// Note that in the long run, these nodes should use styled elements
 /// and not a replaced elemenet.
 macro_rules! formatted_element {
@@ -176,10 +180,10 @@ macro_rules! formatted_element {
 }
 
 /// Strike out text
-/// 
+///
 /// This function returns a string with the unicode “Combining Long
 /// Strike Overlay” added after every letter in the source string.
-fn strike (text: &str) -> Cow<str> {
+fn strike(text: &str) -> Cow<str> {
     let mut result = String::new();
     for graph in text.graphemes(true) {
         result.push_str(graph);
@@ -196,10 +200,10 @@ fn test_strike() {
 }
 
 /// Underline text
-/// 
+///
 /// This function returns a string with the unicode “Combining Low
 /// Line” added after every letter in the source string.
-fn underline (text: &str) -> Cow<str> {
+fn underline(text: &str) -> Cow<str> {
     let mut result = String::new();
     for graph in text.graphemes(true) {
         result.push_str(graph);
@@ -220,14 +224,14 @@ fn a_element(element: &ElementData, _: &mut DocState) -> VNodeType {
     let text = element.get_text();
     let href_opt = element.get_attr("href");
     let text = match href_opt {
-        None => Cow::from(text),
+        None => text,
         Some(x) => {
             if x.starts_with("mailto:") {
                 Cow::from(format!("{} <{}>", text, &x[7..]))
             } else if x.starts_with("http:") || x.starts_with("https:") {
                 Cow::from(format!("{} ({})", text, &x))
             } else {
-                Cow::from(text)
+                text
             }
         }
     };
@@ -239,11 +243,11 @@ fn abbr_element(element: &ElementData, doc_state: &mut DocState) -> VNodeType {
     let text = element.get_text();
     let title = element.get_attr("title");
     let text = match title {
-        None => Cow::from(text),
+        None => text,
         Some(x) => {
             let key = format!("abbr_{}", text);
             if doc_state.contains(&key) {
-                Cow::from(text)
+                text
             } else {
                 doc_state.insert(key);
                 Cow::from(format!("{} ({})", text, &x))
@@ -259,8 +263,9 @@ fn img_element(element: &ElementData, _: &mut DocState) -> VNodeType {
         &match element.get_attr("alt") {
             Some(x) => Cow::from(x.to_string()),
             None => Cow::from(""),
-        }
-    , element.style)
+        },
+        element.style,
+    )
 }
 
 /// Function for <input> replaced element
@@ -273,17 +278,17 @@ fn input_element(element: &ElementData, _: &mut DocState) -> VNodeType {
                 result.push_str(&x[..]);
                 result.push(']');
                 Cow::from(result)
-            },
+            }
             None => Cow::from("[]"),
-        }
-    , element.style)
+        },
+        element.style,
+    )
 }
 
 /// Function for <br> replaced element
 fn br_element(_: &ElementData, _: &mut DocState) -> VNodeType {
     VNodeType::Text("\n".to_owned(), EdgeState::Trim, EdgeState::Trim)
 }
-
 
 struct ItemizedData {
     ordered: bool,
@@ -293,25 +298,39 @@ struct ItemizedData {
 
 impl ElementMapping {
     fn with_replace(func: ReplaceFn) -> ElementMapping {
-        ElementMapping { node_type: ElementType::Replace(func), style: None }
+        ElementMapping {
+            node_type: ElementType::Replace(func),
+            style: None,
+        }
     }
 
     fn with_block(block_type: BlockType) -> ElementMapping {
-        ElementMapping { node_type: ElementType::Block(block_type), style: None }
+        ElementMapping {
+            node_type: ElementType::Block(block_type),
+            style: None,
+        }
     }
 
     fn with_style(style: StyleFn) -> ElementMapping {
-        ElementMapping { node_type: ElementType::Inline, style: Some(style) }
+        ElementMapping {
+            node_type: ElementType::Inline,
+            style: Some(style),
+        }
     }
 
     fn plain() -> ElementMapping {
-        ElementMapping { node_type: ElementType::Inline, style: None }
+        ElementMapping {
+            node_type: ElementType::Inline,
+            style: None,
+        }
     }
 
     fn blank() -> ElementMapping {
-        ElementMapping { node_type: ElementType::Blank, style: None }
+        ElementMapping {
+            node_type: ElementType::Blank,
+            style: None,
+        }
     }
-
 
     fn get(tag_name: &str) -> ElementMapping {
         let header_mapping = ElementMapping {
@@ -347,8 +366,7 @@ impl ElementMapping {
             "figcaption" => ElementMapping::with_block(BlockType::Block),
             "figure" => ElementMapping::with_block(BlockType::Block),
             "hr" => ElementMapping::with_block(BlockType::Rule),
-            "li" => ElementMapping::with_block(
-                BlockType::ListItem(ItemizedData::new())),
+            "li" => ElementMapping::with_block(BlockType::ListItem(ItemizedData::new())),
             "ol" => ElementMapping::with_block(BlockType::OList),
             "p" => ElementMapping::with_block(BlockType::Block),
             "pre" => ElementMapping {
@@ -459,11 +477,15 @@ impl ElementMapping {
 impl ItemizedData {
     /// Initialize with dummy values
     fn new() -> ItemizedData {
-        ItemizedData { ordered: false, count: 0, count_length: 0}
+        ItemizedData {
+            ordered: false,
+            count: 0,
+            count_length: 0,
+        }
     }
 
     /// Set ordering values
-    /// 
+    ///
     /// These are set when the parent list element is being created
     fn set_ordering(&mut self, count: usize, count_length: usize) {
         self.ordered = true;
@@ -472,9 +494,7 @@ impl ItemizedData {
     }
 }
 
-
 impl Block {
-
     /// Initialize a block element from a BlockType and ElementData
     fn from_data(block_type: BlockType, mut data: ElementData) -> Block {
         if let BlockType::OList = block_type {
@@ -501,7 +521,7 @@ impl Block {
         Block { block_type, data }
     }
 
-    fn block_text<'a>(&self, width: Option<Width>) -> Cow<str> {
+    fn block_text(&self, width: Option<Width>) -> Cow<str> {
         if let BlockType::Rule = self.block_type {
             Cow::from("-".repeat(width.unwrap_or(3)))
         } else {
@@ -522,7 +542,6 @@ impl Block {
         }
     }
 
-
     fn get_child_block_sep(&self) -> &str {
         match self.block_type {
             BlockType::OList => "\n",
@@ -536,11 +555,11 @@ impl Block {
         match &self.block_type {
             BlockType::ListItem(id) => {
                 if id.ordered {
-                    format!("{:>width$}. ", count=id.count, width=id.count_length)
+                    format!("{:>width$}. ", count = id.count, width = id.count_length)
                 } else {
                     "* ".to_owned()
                 }
-            },
+            }
             BlockType::Quote => "> ".to_owned(),
             _ => "".to_owned(),
         }
@@ -554,7 +573,7 @@ impl Block {
                 } else {
                     "  ".to_owned()
                 }
-            },
+            }
             BlockType::Quote => "> ".to_owned(),
             _ => "".to_owned(),
         }
@@ -582,8 +601,13 @@ impl EdgeState {
 
     fn from_char(letter: Option<char>) -> EdgeState {
         match letter {
-            Some(c) => if c.is_whitespace() {
-                EdgeState::White } else { EdgeState::Blank },
+            Some(c) => {
+                if c.is_whitespace() {
+                    EdgeState::White
+                } else {
+                    EdgeState::Blank
+                }
+            }
             None => EdgeState::Blank,
         }
     }
@@ -593,11 +617,11 @@ impl EdgeState {
             EdgeState::Trim => "",
             EdgeState::Blank => match other {
                 EdgeState::White => " ",
-                _ => ""
+                _ => "",
             },
             EdgeState::White => match other {
                 EdgeState::Trim => "",
-                _ => " "
+                _ => " ",
             },
         }
     }
@@ -610,7 +634,6 @@ enum VNodeType {
 }
 
 impl VNodeType {
-
     fn is_empty(&self) -> bool {
         match self {
             VNodeType::Text(text, _, _) => text == "",
@@ -620,9 +643,7 @@ impl VNodeType {
 
     fn width_hint(&self) -> Width {
         match self {
-            VNodeType::Text(text, _, _) => {
-                text.as_str().graphemes(true).count()
-            },
+            VNodeType::Text(text, _, _) => text.as_str().graphemes(true).count(),
             VNodeType::Block(block) => {
                 if let BlockType::Rule = block.block_type {
                     3
@@ -630,7 +651,9 @@ impl VNodeType {
                     let mut width = 0;
                     for child in &block.data.children {
                         let child_size = child.width_hint();
-                        if child_size > width { width = child_size }
+                        if child_size > width {
+                            width = child_size
+                        }
                     }
                     width
                 }
@@ -645,64 +668,83 @@ impl VNodeType {
         } else {
             WHITESPACE_AFFIX.replace_all(text.trim(), " ")
         };
-        let text = if style.underline { underline(&text) } else { text };
+        let text = if style.underline {
+            underline(&text)
+        } else {
+            text
+        };
         let text = if style.strike { strike(&text) } else { text };
-        let text = if style.uppercase { Cow::from(text.to_uppercase()) }
-            else { text };
+        let text = if style.uppercase {
+            Cow::from(text.to_uppercase())
+        } else {
+            text
+        };
         // It would be nice to store a Cow here, but that
         // would require getting lifetimes correct.
         VNodeType::Text(text.into(), prefix, suffix)
     }
 }
 
-fn get_virtual_elements(node: &Handle, style: StyleData, doc_state: &mut DocState) -> Vec<VNodeType> {
+fn get_virtual_elements(
+    node: &Handle,
+    style: StyleData,
+    doc_state: &mut DocState,
+) -> Vec<VNodeType> {
     match node.data {
         NodeData::Text { ref contents } => {
-                let b = contents.borrow();
-                if b.is_empty() {
-                    vec![]
-                } else {
-                    vec![VNodeType::from_text(&b, style)]
-                }
-            },
-        NodeData::Element { ref name, ref attrs, .. } =>  {
-                // build vecs
-                let tag_name = &name.local[..];
-                let mapping = ElementMapping::get(tag_name);
-                let style = if let Some(s) = mapping.style { s(style) } else { style };
+            let b = contents.borrow();
+            if b.is_empty() {
+                vec![]
+            } else {
+                vec![VNodeType::from_text(&b, style)]
+            }
+        }
+        NodeData::Element {
+            ref name,
+            ref attrs,
+            ..
+        } => {
+            // build vecs
+            let tag_name = &name.local[..];
+            let mapping = ElementMapping::get(tag_name);
+            let style = if let Some(s) = mapping.style {
+                s(style)
+            } else {
+                style
+            };
 
-                let mut child_vec = Vec::new();
-                for child in node.children.borrow().iter() {
-                    for el in get_virtual_elements(&child.clone(), style, doc_state) {
-                        child_vec.push(el);
-                    }
-                };
-
-                let mut attrs_vec = Vec::new();
-                for attr in attrs.borrow().iter() {
-                    attrs_vec.push(attr.clone())
+            let mut child_vec = Vec::new();
+            for child in node.children.borrow().iter() {
+                for el in get_virtual_elements(&child.clone(), style, doc_state) {
+                    child_vec.push(el);
                 }
+            }
 
-                match mapping.node_type {
-                    ElementType::Blank => vec![],
-                    ElementType::Inline => child_vec,
-                    ElementType::Replace(func) => {
-                        let data = ElementData::from(attrs_vec, child_vec, style);
-                        vec![func(&data, doc_state)]
-                    },
-                    ElementType::Block(block_type) => {
-                        let data = ElementData::from(attrs_vec, child_vec, style);
-                        vec![VNodeType::Block(Block::from_data(block_type, data))]
-                    }
+            let mut attrs_vec = Vec::new();
+            for attr in attrs.borrow().iter() {
+                attrs_vec.push(attr.clone())
+            }
+
+            match mapping.node_type {
+                ElementType::Blank => vec![],
+                ElementType::Inline => child_vec,
+                ElementType::Replace(func) => {
+                    let data = ElementData::from(attrs_vec, child_vec, style);
+                    vec![func(&data, doc_state)]
                 }
-            },
+                ElementType::Block(block_type) => {
+                    let data = ElementData::from(attrs_vec, child_vec, style);
+                    vec![VNodeType::Block(Block::from_data(block_type, data))]
+                }
+            }
+        }
         NodeData::Document => {
             let mut child_vec = Vec::new();
             for child in node.children.borrow().iter() {
                 for el in get_virtual_elements(&child.clone(), style, doc_state) {
                     child_vec.push(el);
                 }
-            };
+            }
             let data = ElementData::from(vec![], child_vec, style);
             vec![VNodeType::Block(Block::from_data(BlockType::Block, data))]
         }
@@ -711,18 +753,19 @@ fn get_virtual_elements(node: &Handle, style: StyleData, doc_state: &mut DocStat
 }
 
 impl ElementData {
-    fn from(
-            attrs: Vec<Attribute>,
-            children: Vec<VNodeType>,
-            style: StyleData) -> ElementData {
-        ElementData { attrs, children, style }
+    fn from(attrs: Vec<Attribute>, children: Vec<VNodeType>, style: StyleData) -> ElementData {
+        ElementData {
+            attrs,
+            children,
+            style,
+        }
     }
 
     /// Gets the contents as text
-    /// 
+    ///
     /// Note that if there are child block elements, they will get
     /// displayed as if they were inline
-    fn get_text<'a> (&self) -> Cow<'a, str> {
+    fn get_text<'a>(&self) -> Cow<'a, str> {
         generic_block_text(&self.children, &None)
     }
 
@@ -737,7 +780,6 @@ impl ElementData {
         }
         result
     }
-
 }
 
 impl StyleData {
@@ -784,7 +826,7 @@ impl StyleData {
 }
 
 /// Contains a variety of options for rendering a block element
-/// 
+///
 /// Most of these are set based on the parent BlockType
 struct BlockData<'a> {
     child_block_sep: &'a str,
@@ -794,7 +836,6 @@ struct BlockData<'a> {
 }
 
 impl<'a> BlockData<'a> {
-
     fn get_sub_width(&self) -> Width {
         self.width - self.first_line_prefix.len()
     }
@@ -805,13 +846,10 @@ impl<'a> BlockData<'a> {
 }
 
 /// Big large rendering function
-/// 
+///
 /// If `block_data` is set, it will be rendered as a block. Otherwise
 /// it will be rendered inline.
-fn generic_block_text<'a> (
-        children: &[VNodeType],
-        block_data: &Option<BlockData>) -> Cow<'a, str> {
-
+fn generic_block_text<'a>(children: &[VNodeType], block_data: &Option<BlockData>) -> Cow<'a, str> {
     let mut blocks = Vec::new();
     let mut last_inline_text = String::new();
     let mut had_white_suffix = EdgeState::Trim;
@@ -827,7 +865,7 @@ fn generic_block_text<'a> (
                     last_inline_text.push_str(text);
                     had_white_suffix = *suffix;
                 }
-            },
+            }
             VNodeType::Block(el) => {
                 if let Some(data) = &block_data {
                     if last_inline_text != "" {
@@ -846,7 +884,11 @@ fn generic_block_text<'a> (
                     };
                     if !text.is_empty() {
                         let mut block_lines = text.split(LINE_SEP);
-                        blocks.push(format!("{}{}", data.first_line_prefix, block_lines.join(data.get_sep().as_str())));
+                        blocks.push(format!(
+                            "{}{}",
+                            data.first_line_prefix,
+                            block_lines.join(data.get_sep().as_str())
+                        ));
                     }
                     last_inline_text.clear();
                 } else {
@@ -854,7 +896,7 @@ fn generic_block_text<'a> (
                     last_inline_text.push_str(&el.block_text(None))
                 }
                 had_white_suffix = EdgeState::Trim;
-            },
+            }
         };
     }
     if let Some(data) = &block_data {
@@ -871,7 +913,11 @@ fn generic_block_text<'a> (
                     }
                 }
             }
-            blocks.push(format!("{}{}", data.first_line_prefix, wrapped_lines.join(data.get_sep().as_str())));
+            blocks.push(format!(
+                "{}{}",
+                data.first_line_prefix,
+                wrapped_lines.join(data.get_sep().as_str())
+            ));
         }
         Cow::from(blocks.join(data.child_block_sep))
     } else {
@@ -886,7 +932,10 @@ fn table_column_widths(rows: &[VNodeType]) -> Vec<Ratio<Width>> {
         let child_results = tr_column_widths(&child);
         for child_result in child_results.iter() {
             let min_len = if result.len() < child_result.len() {
-                result.len() } else { child_result.len() };
+                result.len()
+            } else {
+                child_result.len()
+            };
             for idx in 0..min_len {
                 if result[idx] < child_result[idx] {
                     result[idx] = child_result[idx];
@@ -894,7 +943,7 @@ fn table_column_widths(rows: &[VNodeType]) -> Vec<Ratio<Width>> {
             }
             if min_len < child_result.len() {
                 result.extend_from_slice(&child_result[min_len..]);
-            } 
+            }
         }
     }
     result
@@ -903,37 +952,36 @@ fn table_column_widths(rows: &[VNodeType]) -> Vec<Ratio<Width>> {
 /// Calculate the column withds of an individual table row
 fn tr_column_widths(row: &VNodeType) -> Vec<Vec<Ratio<Width>>> {
     match row {
-        VNodeType::Text(_, _, _) => vec!(vec!(Ratio::new(row.width_hint(), 1))),
-        VNodeType::Block(block) => {
-            match block.block_type {
-                BlockType::TPart => {
-                    let mut result = Vec::new();
-                    for child in block.data.children.iter() {
-                        result.extend(tr_column_widths(&child));
-                    }
-                    result
-                }, BlockType::TRow => {
-                    let mut result = Vec::new();
-                    for child in block.data.children.iter() {
-                        if child.is_empty() { continue; }
-                        let span: Width = match child {
-                            VNodeType::Block(block) => {
-                                match block.data.get_attr("colspan") {
-                                    Some(s) => s.parse::<Width>().unwrap_or(1),
-                                    None => 1,
-                                }
-                            },
-                            _ => 1
-                        };
-                        for _ in 0..span {
-                            result.push(Ratio::new(child.width_hint(), span));
-                        }
-                    }
-                    vec!(result)
-                }, _ => vec!(vec!(Ratio::new(row.width_hint(), 1))),
-
+        VNodeType::Text(_, _, _) => vec![vec![Ratio::new(row.width_hint(), 1)]],
+        VNodeType::Block(block) => match block.block_type {
+            BlockType::TPart => {
+                let mut result = Vec::new();
+                for child in block.data.children.iter() {
+                    result.extend(tr_column_widths(&child));
+                }
+                result
             }
-        }
+            BlockType::TRow => {
+                let mut result = Vec::new();
+                for child in block.data.children.iter() {
+                    if child.is_empty() {
+                        continue;
+                    }
+                    let span: Width = match child {
+                        VNodeType::Block(block) => match block.data.get_attr("colspan") {
+                            Some(s) => s.parse::<Width>().unwrap_or(1),
+                            None => 1,
+                        },
+                        _ => 1,
+                    };
+                    for _ in 0..span {
+                        result.push(Ratio::new(child.width_hint(), span));
+                    }
+                }
+                vec![result]
+            }
+            _ => vec![vec![Ratio::new(row.width_hint(), 1)]],
+        },
     }
 }
 
@@ -941,20 +989,18 @@ fn tr_column_widths(row: &VNodeType) -> Vec<Vec<Ratio<Width>>> {
 fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) -> Vec<String> {
     let mut rows = Vec::new();
     for maybe_row in table.data.children.iter() {
-        if maybe_row.is_empty() { continue; }
+        if maybe_row.is_empty() {
+            continue;
+        }
         match maybe_row {
             VNodeType::Text(text, _, _) => rows.push(text.to_owned()),
-            VNodeType::Block(block) => {
-                match block.block_type {
-                    BlockType::TPart => {
-                        let inner_rows = table_rows(block, max_width, column_widths);
-                        rows.extend(inner_rows);
-                    },
-                    BlockType::TRow => {
-                        rows.push(tr_text(&block, max_width, &column_widths))
-                    },
-                    _ => rows.push(block.block_text(max_width).into())
+            VNodeType::Block(block) => match block.block_type {
+                BlockType::TPart => {
+                    let inner_rows = table_rows(block, max_width, column_widths);
+                    rows.extend(inner_rows);
                 }
+                BlockType::TRow => rows.push(tr_text(&block, max_width, &column_widths)),
+                _ => rows.push(block.block_text(max_width).into()),
             },
         }
     }
@@ -970,27 +1016,34 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
         let mut idx = 0;
         let mut max_height = 0;
         for child in row.data.children.iter() {
-            if child.is_empty() { continue; }
+            if child.is_empty() {
+                continue;
+            }
             let span = if let VNodeType::Block(b) = child {
                 match b.data.get_attr("colspan") {
                     Some(s) => s.parse::<Width>().unwrap_or(1),
                     None => 1,
                 }
-            } else { 1 };
+            } else {
+                1
+            };
 
-            let width = column_widths[idx..idx+span].iter().sum();
+            let width = column_widths[idx..idx + span].iter().sum();
             let text = match child {
                 VNodeType::Text(ref text, _, _) => Cow::from(text),
-                VNodeType::Block(b) => b.block_text(Some(width))
+                VNodeType::Block(b) => b.block_text(Some(width)),
             };
 
             let height = text.lines().count();
-            if max_height < height { max_height = height }
+            if max_height < height {
+                max_height = height
+            }
             cells.push((width, text));
             idx += span;
-            if idx > column_widths.len() { break; }
+            if idx > column_widths.len() {
+                break;
+            }
         }
-        
 
         let mut lines = vec![String::new(); max_height];
         let mut first = true;
@@ -998,8 +1051,10 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
         for (width, content) in cells {
             let mut height = 0;
             for (idx, c_line) in content.lines().enumerate() {
-                height = idx+1;
-                if !first { lines[idx].push_str(COLUMN_SEP); }
+                height = idx + 1;
+                if !first {
+                    lines[idx].push_str(COLUMN_SEP);
+                }
                 lines[idx].push_str(c_line);
                 let c_line_len = c_line.graphemes(true).count();
                 if width > c_line_len {
@@ -1008,19 +1063,18 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
             }
             // here we're just evening out all the cell heights
             for item in lines.iter_mut().take(max_height).skip(height) {
-                if !first { item.push_str(COLUMN_SEP); }
+                if !first {
+                    item.push_str(COLUMN_SEP);
+                }
                 item.push_str(" ".repeat(width).as_str())
             }
             first = false;
-            
         }
         lines.iter().map(|l| l.trim_end()).join("\n")
     }
 }
 
-
 fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<Width> {
-
     let mut result: Vec<Width> = vec![0; widths.len()];
     if !widths.is_empty() {
         let usable_max = Ratio::new(max_width - COLUMN_SEP.len() * (widths.len() - 1), 1);
@@ -1028,9 +1082,15 @@ fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<W
 
         if !desired_max.is_zero() {
             let ratio = if usable_max < desired_max {
-                usable_max / desired_max } else { Ratio::new(1, 1) };
-            let mut float_widths = widths.iter().map(|x| ratio * x)
-                .enumerate().sorted_by(|a, b| Ord::cmp(&b.1, &a.1))
+                usable_max / desired_max
+            } else {
+                Ratio::new(1, 1)
+            };
+            let mut float_widths = widths
+                .iter()
+                .map(|x| ratio * x)
+                .enumerate()
+                .sorted_by(|a, b| Ord::cmp(&b.1, &a.1))
                 .collect::<Vec<(usize, Ratio<usize>)>>();
             let mut balance: Ratio<usize> = Ratio::from_integer(0);
             let mut positive = true;
@@ -1038,14 +1098,24 @@ fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<W
             let mut end_idx = widths.len() - 1;
             for _ in 0..widths.len() {
                 let idx = if positive { start_idx } else { end_idx };
-                if positive { start_idx += 1 } else { end_idx -= 1 }
+                if positive {
+                    start_idx += 1
+                } else {
+                    end_idx -= 1
+                }
                 let (width_idx, mut width_value) = float_widths[idx];
-                let mut new_width_ratio = if positive { width_value.floor() }
-                    else { width_value.ceil() };
+                let mut new_width_ratio = if positive {
+                    width_value.floor()
+                } else {
+                    width_value.ceil()
+                };
 
                 float_widths[idx] = (width_idx, new_width_ratio);
-                if positive { new_width_ratio += balance }
-                    else { width_value += balance }
+                if positive {
+                    new_width_ratio += balance
+                } else {
+                    width_value += balance
+                }
                 if new_width_ratio >= width_value {
                     balance = new_width_ratio - width_value;
                     positive = true;
@@ -1066,34 +1136,38 @@ fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<W
 
 #[test]
 fn test_short_recalculate() {
-    let start_widths: Vec<Ratio<Width>> = vec![
-        Ratio::new(2, 1), Ratio::new(4, 1), Ratio::new(6, 1)];
+    let start_widths: Vec<Ratio<Width>> =
+        vec![Ratio::new(2, 1), Ratio::new(4, 1), Ratio::new(6, 1)];
     let end_widths: Vec<Width> = vec![2, 4, 6];
     assert_eq!(end_widths, recalculate_column_widths(&start_widths, 80));
 }
 
 #[test]
 fn test_long_recalculate() {
-    let start_widths: Vec<Ratio<Width>> = vec![
-        Ratio::new(12, 1), Ratio::new(66, 1), Ratio::new(65, 1)];
+    let start_widths: Vec<Ratio<Width>> =
+        vec![Ratio::new(12, 1), Ratio::new(66, 1), Ratio::new(65, 1)];
     let expected_widths: Vec<Width> = vec![7, 35, 34];
-    assert_eq!(expected_widths, recalculate_column_widths(&start_widths, 80));
+    assert_eq!(
+        expected_widths,
+        recalculate_column_widths(&start_widths, 80)
+    );
 }
-
 
 #[test]
 fn test_long_recalculate2() {
-    let start_widths: Vec<Ratio<Width>> = vec![
-        Ratio::new(10, 1), Ratio::new(66, 1), Ratio::new(65, 1)];
+    let start_widths: Vec<Ratio<Width>> =
+        vec![Ratio::new(10, 1), Ratio::new(66, 1), Ratio::new(65, 1)];
     let expected_widths: Vec<Width> = vec![6, 35, 35];
-    assert_eq!(expected_widths, recalculate_column_widths(&start_widths, 80));
+    assert_eq!(
+        expected_widths,
+        recalculate_column_widths(&start_widths, 80)
+    );
 }
 
-
 /// Converts HTML text into plain text
-/// 
+///
 /// # Example
-/// 
+///
 /// ```
 /// let text = "Hello\nWorld";
 /// let html = "Hello<br>World";
@@ -1107,22 +1181,19 @@ pub fn convert(input: &str, width: Width) -> String {
     convert_dom(&dom, width)
 }
 
-
 /// Converts HTML text into plain text, using an I/O reader & writer
-/// 
+///
 /// This method is a fair bit faster and more memory efficient if
 /// you don’t already have strings.
-/// 
+///
 /// # Example
-/// 
+///
 /// ```
 /// use std::io;
 /// august::convert_io(io::stdin().lock(), io::stdout().lock(), 79);
 /// ```
 
-pub fn convert_io(
-        mut input: impl Read, mut output: impl Write, width: Width
-        ) -> io::Result<usize> {
+pub fn convert_io(mut input: impl Read, mut output: impl Write, width: Width) -> io::Result<usize> {
     let dom = parse_document(RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut input)?;
@@ -1133,8 +1204,7 @@ pub fn convert_io(
 pub fn convert_dom(dom: &RcDom, width: Width) -> String {
     let mut output = String::new();
     let mut doc_state = HashSet::new();
-    let virt_dom = get_virtual_elements(
-        &dom.document, StyleData::new(), &mut doc_state);
+    let virt_dom = get_virtual_elements(&dom.document, StyleData::new(), &mut doc_state);
     for el_type in virt_dom {
         match el_type {
             VNodeType::Text(in_text, _, _) => output.push_str(&in_text),

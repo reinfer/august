@@ -17,7 +17,6 @@ num-rational = "^0"
 num-traits = "^0"
 itertools = "^0"
 lazy_static = "~1"
-hyphenation = "^0"
 textwrap = { version = "^0" }
 regex = "~1"
 unicode-segmentation = "~1"
