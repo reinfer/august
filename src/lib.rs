@@ -26,7 +26,9 @@
 //! 
 //! # Usage
 //! 
-//! Just call the `convert` function.
+//! Just call the [`convert`](fn.convert.html) or
+//! [`convert_io`](fn.convert_io.html) functions.
+//!     
 
 #[macro_use] extern crate lazy_static;
 
@@ -35,6 +37,7 @@ use std::default::Default;
 use std::string::String;
 use std::str::FromStr;
 use std::borrow::Cow;
+use std::io::{self, Read, Write};
 
 use regex::Regex;
 use textwrap;
@@ -638,7 +641,7 @@ impl VNodeType {
     fn from_text(text: &str, style: StyleData) -> VNodeType {
         let (prefix, suffix) = EdgeState::from(&text, style);
         let text = if style.preserve_whitespace {
-            NEWLINE_EDGES.replace_all(&text, "")
+            NEWLINE_EDGES.replace_all(text, "")
         } else {
             WHITESPACE_AFFIX.replace_all(text.trim(), " ")
         };
@@ -646,7 +649,9 @@ impl VNodeType {
         let text = if style.strike { strike(&text) } else { text };
         let text = if style.uppercase { Cow::from(text.to_uppercase()) }
             else { text };
-        VNodeType::Text(text.to_string(), prefix, suffix)
+        // It would be nice to store a Cow here, but that
+        // would require getting lifetimes correct.
+        VNodeType::Text(text.into(), prefix, suffix)
     }
 }
 
@@ -654,9 +659,10 @@ fn get_virtual_elements(node: &Handle, style: StyleData, doc_state: &mut DocStat
     match node.data {
         NodeData::Text { ref contents } => {
                 let b = contents.borrow();
-                match b.to_string().as_str() {
-                    "" => vec![],
-                    _ => vec![VNodeType::from_text(&b, style)],
+                if b.is_empty() {
+                    vec![]
+                } else {
+                    vec![VNodeType::from_text(&b, style)]
                 }
             },
         NodeData::Element { ref name, ref attrs, .. } =>  {
@@ -1008,7 +1014,7 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
             first = false;
             
         }
-        lines.iter().map(|l| l.trim_right()).join("\n")
+        lines.iter().map(|l| l.trim_end()).join("\n")
     }
 }
 
@@ -1099,6 +1105,28 @@ pub fn convert(input: &str, width: Width) -> String {
     let dril = Tendril::from_str(input).unwrap();
     let dom = parser.one(dril);
     convert_dom(&dom, width)
+}
+
+
+/// Converts HTML text into plain text, using an I/O reader & writer
+/// 
+/// This method is a fair bit faster and more memory efficient if
+/// you don’t already have strings.
+/// 
+/// # Example
+/// 
+/// ```
+/// use std::io;
+/// august::convert_io(io::stdin().lock(), io::stdout().lock(), 79);
+/// ```
+
+pub fn convert_io(
+        mut input: impl Read, mut output: impl Write, width: Width
+        ) -> io::Result<usize> {
+    let dom = parse_document(RcDom::default(), Default::default())
+        .from_utf8()
+        .read_from(&mut input)?;
+    output.write(convert_dom(&dom, width).as_bytes())
 }
 
 /// Converts a loaded markup5ever DOM into a text string

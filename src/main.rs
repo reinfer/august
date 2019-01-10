@@ -1,6 +1,10 @@
+// use the system allocator so valgrind works
+use std::alloc::System;
+#[global_allocator]
+static A: System = System;
 
 use argparse;
-use std::io::{self, Read, Write};
+use std::io;
 
 
 const DEFAULT_WIDTH: august::Width = 79;
@@ -22,7 +26,6 @@ fn default_width() -> august::Width {
 fn main() -> io::Result<()> {
     let mut width: Option<august::Width> = None;
     {
-
         let width_text: &'static str = if cfg!(feature = "term-size") {
                 "Set document width, defaults to terminal width"
             } else {
@@ -36,12 +39,6 @@ fn main() -> io::Result<()> {
         ap.parse_args_or_exit();
     }
     let width = width.unwrap_or_else(default_width);
-    let mut buffer = String::new();
-    let stdin = io::stdin();
-    let mut inlock = stdin.lock();
-    inlock.read_to_string(&mut buffer)?;
-    let stdout = io::stdout();
-    let mut outlock = stdout.lock();
-    outlock.write_all(august::convert(buffer.as_str(), width).as_bytes())?;
+    august::convert_io(io::stdin().lock(), io::stdout().lock(), width)?;
     Ok(())
 }
