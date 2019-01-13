@@ -36,7 +36,7 @@ extern crate lazy_static;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::default::Default;
-use std::io::{self, Read, Write};
+use std::io;
 use std::str::FromStr;
 use std::string::String;
 
@@ -521,15 +521,15 @@ impl Block {
         Block { block_type, data }
     }
 
-    fn block_text(&self, width: Option<Width>) -> Cow<str> {
+    fn block_write(&self, output: &mut StringWriter, width: Option<Width>) -> io::Result<()> {
         if let BlockType::Rule = self.block_type {
-            Cow::from("-".repeat(width.unwrap_or(3)))
+            output.write_str(&"-".repeat(width.unwrap_or(3)))
         } else {
             let data = match width {
                 Some(w) => Some(self.get_block_data(w)),
                 None => None,
             };
-            generic_block_text(&self.data.children, &data)
+            generic_block_write(&self.data.children, &data, output)
         }
     }
 
@@ -588,27 +588,25 @@ enum EdgeState {
 }
 
 impl EdgeState {
-    fn from(text: &str, style: StyleData) -> (EdgeState, EdgeState) {
+    fn from(text: &str, style: StyleData) -> (EdgeState, EdgeState, &str) {
         if style.preserve_whitespace {
-            (EdgeState::Blank, EdgeState::Blank)
+            (EdgeState::Blank, EdgeState::Blank, text)
         } else {
-            let mut iter = text.chars();
-            let first = iter.next();
-            let last = iter.rev().next();
-            (EdgeState::from_char(first), EdgeState::from_char(last))
+            let ts = text.trim_start();
+            let te = ts.trim_end();
+            (
+                EdgeState::from_white(ts.len() < text.len()),
+                EdgeState::from_white(te.len() < ts.len()),
+                te,
+            )
         }
     }
 
-    fn from_char(letter: Option<char>) -> EdgeState {
-        match letter {
-            Some(c) => {
-                if c.is_whitespace() {
-                    EdgeState::White
-                } else {
-                    EdgeState::Blank
-                }
-            }
-            None => EdgeState::Blank,
+    fn from_white(is_white: bool) -> EdgeState {
+        if is_white {
+            EdgeState::White
+        } else {
+            EdgeState::Blank
         }
     }
 
@@ -662,11 +660,11 @@ impl VNodeType {
     }
 
     fn from_text(text: &str, style: StyleData) -> VNodeType {
-        let (prefix, suffix) = EdgeState::from(&text, style);
+        let (prefix, suffix, text) = EdgeState::from(&text, style);
         let text = if style.preserve_whitespace {
             NEWLINE_EDGES.replace_all(text, "")
         } else {
-            WHITESPACE_AFFIX.replace_all(text.trim(), " ")
+            WHITESPACE_AFFIX.replace_all(text, " ")
         };
         let text = if style.underline {
             underline(&text)
@@ -766,7 +764,10 @@ impl ElementData {
     /// Note that if there are child block elements, they will get
     /// displayed as if they were inline
     fn get_text<'a>(&self) -> Cow<'a, str> {
-        generic_block_text(&self.children, &None)
+        let mut s = String::new();
+        let mut sw = StringWriter::Str(&mut s);
+        generic_block_write(&self.children, &None, &mut sw).unwrap();
+        Cow::from(s)
     }
 
     /// Get attribute value
@@ -836,21 +837,34 @@ struct BlockData<'a> {
 }
 
 impl<'a> BlockData<'a> {
-    fn get_sub_width(&self) -> Width {
-        self.width - self.first_line_prefix.len()
-    }
-
     fn get_sep(&self) -> String {
         format!("{}{}", LINE_SEP, self.next_line_prefix)
     }
+}
+
+fn inline_block_write(text: &str, data: &BlockData, output: &mut StringWriter) -> io::Result<()> {
+    let wrapper = textwrap::Wrapper::new(data.width);
+    let mut wrapped_lines = wrapper.wrap(&text).into_iter();
+    if let Some(line) = wrapped_lines.next() {
+        output.write_str(&line)?;
+    }
+    for line in wrapped_lines {
+        output.write_str(&data.get_sep())?;
+        output.write_str(&line)?;
+    }
+    Ok(())
 }
 
 /// Big large rendering function
 ///
 /// If `block_data` is set, it will be rendered as a block. Otherwise
 /// it will be rendered inline.
-fn generic_block_text<'a>(children: &[VNodeType], block_data: &Option<BlockData>) -> Cow<'a, str> {
-    let mut blocks = Vec::new();
+fn generic_block_write(
+    children: &[VNodeType],
+    block_data: &Option<BlockData>,
+    output: &mut StringWriter,
+) -> io::Result<()> {
+    let mut first_block = true;
     let mut last_inline_text = String::new();
     let mut had_white_suffix = EdgeState::Trim;
     for child in children.iter() {
@@ -869,59 +883,62 @@ fn generic_block_text<'a>(children: &[VNodeType], block_data: &Option<BlockData>
             VNodeType::Block(el) => {
                 if let Some(data) = &block_data {
                     if last_inline_text != "" {
-                        let wrapper = textwrap::Wrapper::new(data.width); // TODO: cache?
-                        let wrapped_lines = wrapper.wrap(&last_inline_text);
-                        blocks.push(wrapped_lines.join(data.get_sep().as_str()));
+                        if first_block {
+                            first_block = false;
+                        } else {
+                            output.write_str(data.child_block_sep)?;
+                        }
+                        inline_block_write(&last_inline_text, data, output)?;
                     }
-                    let width = Some(data.get_sub_width());
-                    let text = if let BlockType::Table = el.block_type {
+                    let width = Some(data.width - data.first_line_prefix.len());
+                    let mut text = String::new();
+                    if let BlockType::Table = el.block_type {
                         let column_widths = table_column_widths(&el.data.children);
                         let column_widths = recalculate_column_widths(&column_widths, data.width);
                         let rows = table_rows(el, width, &column_widths);
-                        Cow::from(rows.iter().filter(|x| !x.is_empty()).join("\n"))
+                        text.push_str(&rows.iter().filter(|x| !x.is_empty()).join("\n"))
                     } else {
-                        el.block_text(width)
+                        let mut sw = StringWriter::Str(&mut text);
+                        el.block_write(&mut sw, width)?
                     };
                     if !text.is_empty() {
                         let mut block_lines = text.split(LINE_SEP);
-                        blocks.push(format!(
-                            "{}{}",
-                            data.first_line_prefix,
-                            block_lines.join(data.get_sep().as_str())
-                        ));
+                        if first_block {
+                            first_block = false;
+                        } else {
+                            output.write_str(data.child_block_sep)?;
+                        }
+                        output.write_str(&data.first_line_prefix)?;
+                        output.write_str(&block_lines.join(&data.get_sep()))?;
                     }
                     last_inline_text.clear();
                 } else {
                     last_inline_text.push_str(had_white_suffix.join_str(&EdgeState::Blank));
-                    last_inline_text.push_str(&el.block_text(None))
+                    let mut sw = StringWriter::Str(&mut last_inline_text);
+                    el.block_write(&mut sw, None)?
                 }
                 had_white_suffix = EdgeState::Trim;
             }
         };
     }
     if let Some(data) = &block_data {
-        if last_inline_text != "" {
-            let lines = last_inline_text.split(LINE_SEP);
-            let mut wrapped_lines = Vec::new();
+        if !last_inline_text.is_empty() {
             let wrapper = textwrap::Wrapper::new(data.width);
-            for line in lines {
-                if line == "" {
-                    wrapped_lines.push(String::from(""));
+            let wrapped_lines = wrapper.wrap(&last_inline_text).into_iter();
+            for line in wrapped_lines {
+                if first_block {
+                    first_block = false;
+                    output.write_str(&data.first_line_prefix)?;
                 } else {
-                    for l in wrapper.wrap(line) {
-                        wrapped_lines.push(String::from(&*l));
-                    }
+                    output.write_str(LINE_SEP)?;
+                    output.write_str(&data.next_line_prefix)?;
                 }
+                output.write_str(&line)?;
             }
-            blocks.push(format!(
-                "{}{}",
-                data.first_line_prefix,
-                wrapped_lines.join(data.get_sep().as_str())
-            ));
         }
-        Cow::from(blocks.join(data.child_block_sep))
+        Ok(())
     } else {
-        Cow::from(last_inline_text)
+        output.write_str(&last_inline_text)
     }
 }
 
@@ -1000,7 +1017,12 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) 
                     rows.extend(inner_rows);
                 }
                 BlockType::TRow => rows.push(tr_text(&block, max_width, &column_widths)),
-                _ => rows.push(block.block_text(max_width).into()),
+                _ => {
+                    let mut s = String::new();
+                    let mut sw = StringWriter::Str(&mut s);
+                    block.block_write(&mut sw, max_width).unwrap();
+                    rows.push(s);
+                }
             },
         }
     }
@@ -1010,7 +1032,10 @@ fn table_rows(table: &Block, max_width: Option<Width>, column_widths: &[Width]) 
 /// Given a row and widths, return text for that row
 fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> String {
     if max_width.is_none() {
-        row.block_text(None).into()
+        let mut s = String::new();
+        let mut sw = StringWriter::Str(&mut s);
+        row.block_write(&mut sw, None).unwrap();
+        s
     } else {
         let mut cells = Vec::new();
         let mut idx = 0;
@@ -1031,7 +1056,12 @@ fn tr_text(row: &Block, max_width: Option<Width>, column_widths: &[Width]) -> St
             let width = column_widths[idx..idx + span].iter().sum();
             let text = match child {
                 VNodeType::Text(ref text, _, _) => Cow::from(text),
-                VNodeType::Block(b) => b.block_text(Some(width)),
+                VNodeType::Block(b) => {
+                    let mut s = String::new();
+                    let mut sw = StringWriter::Str(&mut s);
+                    b.block_write(&mut sw, Some(width)).unwrap();
+                    Cow::from(s)
+                }
             };
 
             let height = text.lines().count();
@@ -1164,6 +1194,27 @@ fn test_long_recalculate2() {
     );
 }
 
+/// Provides a consistent interface between String and std::io::Write,
+enum StringWriter<'a> {
+    Str(&'a mut String),
+    Io(&'a mut std::io::Write),
+}
+
+impl<'a> StringWriter<'a> {
+    fn write_str(&mut self, s: &str) -> Result<(), std::io::Error> {
+        match self {
+            StringWriter::Str(x) => {
+                x.push_str(s);
+                Ok(())
+            }
+            StringWriter::Io(x) => match x.write(s.as_bytes()) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            },
+        }
+    }
+}
+
 /// Converts HTML text into plain text
 ///
 /// # Example
@@ -1193,23 +1244,51 @@ pub fn convert(input: &str, width: Width) -> String {
 /// august::convert_io(io::stdin().lock(), io::stdout().lock(), 79);
 /// ```
 
-pub fn convert_io(mut input: impl Read, mut output: impl Write, width: Width) -> io::Result<usize> {
+pub fn convert_io(
+    mut input: impl std::io::Read,
+    output: impl std::io::Write,
+    width: Width,
+) -> io::Result<()> {
     let dom = parse_document(RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut input)?;
-    output.write(convert_dom(&dom, width).as_bytes())
+    convert_dom_io(&dom, width, output)
+}
+
+/// Take a loaded markup5ever DOM, and send the converted text to an I/O writer
+pub fn convert_dom_io(
+    dom: &RcDom,
+    width: Width,
+    mut output: impl std::io::Write,
+) -> io::Result<()> {
+    let mut sw = StringWriter::Io(&mut output);
+    convert_dom_string_writer(dom, width, &mut sw)
 }
 
 /// Converts a loaded markup5ever DOM into a text string
 pub fn convert_dom(dom: &RcDom, width: Width) -> String {
-    let mut output = String::new();
+    let mut result = String::new();
+    let mut sw = StringWriter::Str(&mut result);
+    // note, we ignore the result here, because string writing
+    // can't cause an I/O Error
+    convert_dom_string_writer(dom, width, &mut sw).unwrap();
+    result
+}
+
+/// Internal method that actually does the writing
+fn convert_dom_string_writer<'a>(
+    dom: &RcDom,
+    width: Width,
+    output: &'a mut StringWriter,
+) -> io::Result<()> {
     let mut doc_state = HashSet::new();
     let virt_dom = get_virtual_elements(&dom.document, StyleData::new(), &mut doc_state);
     for el_type in virt_dom {
         match el_type {
-            VNodeType::Text(in_text, _, _) => output.push_str(&in_text),
-            VNodeType::Block(e) => output.push_str(&e.block_text(Some(width))),
+            // TODO: this should word-wrap
+            VNodeType::Text(in_text, _, _) => output.write_str(&in_text)?,
+            VNodeType::Block(e) => e.block_write(output, Some(width))?,
         }
     }
-    output
+    Ok(())
 }
