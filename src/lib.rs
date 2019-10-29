@@ -1197,7 +1197,7 @@ fn test_long_recalculate2() {
 /// Provides a consistent interface between String and std::io::Write,
 enum StringWriter<'a> {
     Str(&'a mut String),
-    Io(&'a mut std::io::Write),
+    Io(&'a mut dyn std::io::Write),
 }
 
 impl<'a> StringWriter<'a> {
