@@ -1,7 +1,7 @@
 [package]
 name = "august"
 description = "A crate & program for converting HTML to plain text."
-version = "2.2.0"
+version = "2.3.0"
 license = "LGPL-3.0-or-later"
 homepage = "https://gitlab.com/alantrick/august/"
 authors = ["Alan Trick <me@alantrick.ca>"]
@@ -12,6 +12,8 @@ edition = '2018'
 readme = "README.md"
 
 [dependencies]
+# note: latest version is 0.25, but we should drop
+# our use of rcdom before we update to that
 html5ever = "0.24.1"
 num-rational = "0.2.2"
 num-traits = "0.2.8"
