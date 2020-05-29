@@ -28,7 +28,7 @@
 //!
 //! Just call the [`convert`](fn.convert.html) or
 //! [`convert_io`](fn.convert_io.html) functions.
-//!     
+//!
 
 #[macro_use]
 extern crate lazy_static;
@@ -685,16 +685,20 @@ impl VNodeType {
 
 fn get_virtual_elements(
     node: &Handle,
-    style: StyleData,
+    style: Option<StyleData>,
     doc_state: &mut DocState,
 ) -> Vec<VNodeType> {
+    let styledata = match style {
+        Some(s) => s,
+        None => StyleData::new()
+    };
     match node.data {
         NodeData::Text { ref contents } => {
             let b = contents.borrow();
             if b.is_empty() {
                 vec![]
             } else {
-                vec![VNodeType::from_text(&b, style)]
+                vec![VNodeType::from_text(&b, styledata)]
             }
         }
         NodeData::Element {
@@ -705,10 +709,11 @@ fn get_virtual_elements(
             // build vecs
             let tag_name = &name.local[..];
             let mapping = ElementMapping::get(tag_name);
-            let style = if let Some(s) = mapping.style {
-                s(style)
-            } else {
-                style
+            let style = match (style, mapping.style) {
+                (Some(st), Some(ma)) => {
+                    Some(ma(st))
+                }
+                _ => style
             };
 
             let mut child_vec = Vec::new();
@@ -727,11 +732,11 @@ fn get_virtual_elements(
                 ElementType::Blank => vec![],
                 ElementType::Inline => child_vec,
                 ElementType::Replace(func) => {
-                    let data = ElementData::from(attrs_vec, child_vec, style);
+                    let data = ElementData::from(attrs_vec, child_vec, styledata);
                     vec![func(&data, doc_state)]
                 }
                 ElementType::Block(block_type) => {
-                    let data = ElementData::from(attrs_vec, child_vec, style);
+                    let data = ElementData::from(attrs_vec, child_vec, styledata);
                     vec![VNodeType::Block(Block::from_data(block_type, data))]
                 }
             }
@@ -743,7 +748,7 @@ fn get_virtual_elements(
                     child_vec.push(el);
                 }
             }
-            let data = ElementData::from(vec![], child_vec, style);
+            let data = ElementData::from(vec![], child_vec, styledata);
             vec![VNodeType::Block(Block::from_data(BlockType::Block, data))]
         }
         _ => vec![],
@@ -1232,6 +1237,23 @@ pub fn convert(input: &str, width: Width) -> String {
     convert_dom(&dom, width)
 }
 
+/// Converts HTML text into unstyled plain text
+///
+/// # Example
+///
+/// ```
+/// let text = "Hello\nWorld";
+/// let html = "<s><u>Hello<br>World</u></s>";
+/// assert_eq!(text, august::convert_unstyled(html, 79));
+/// ```
+
+pub fn convert_unstyled(input: &str, width: Width) -> String {
+    let parser = parse_document(RcDom::default(), Default::default());
+    let dril = Tendril::from_str(input).unwrap();
+    let dom = parser.one(dril);
+    convert_dom_unstyled(&dom, width)
+}
+
 /// Converts HTML text into plain text, using an I/O reader & writer
 ///
 /// This method is a fair bit faster and more memory efficient if
@@ -1262,7 +1284,17 @@ pub fn convert_dom_io(
     mut output: impl std::io::Write,
 ) -> io::Result<()> {
     let mut sw = StringWriter::Io(&mut output);
-    convert_dom_string_writer(dom, width, &mut sw)
+    convert_dom_string_writer(dom, true, width, &mut sw)
+}
+
+/// Take a loaded markup5ever DOM, and send the converted unstyled text to an I/O writer
+pub fn convert_dom_io_unstyled(
+    dom: &RcDom,
+    width: Width,
+    mut output: impl std::io::Write,
+) -> io::Result<()> {
+    let mut sw = StringWriter::Io(&mut output);
+    convert_dom_string_writer(dom, false, width, &mut sw)
 }
 
 /// Converts a loaded markup5ever DOM into a text string
@@ -1271,18 +1303,32 @@ pub fn convert_dom(dom: &RcDom, width: Width) -> String {
     let mut sw = StringWriter::Str(&mut result);
     // note, we ignore the result here, because string writing
     // can't cause an I/O Error
-    convert_dom_string_writer(dom, width, &mut sw).unwrap();
+    convert_dom_string_writer(dom, true, width, &mut sw).unwrap();
+    result
+}
+
+/// Converts a loaded markup5ever DOM into an unstyled text string
+pub fn convert_dom_unstyled(dom: &RcDom, width: Width) -> String {
+    let mut result = String::new();
+    let mut sw = StringWriter::Str(&mut result);
+    // as above, string writing can't cause an I/O Error
+    convert_dom_string_writer(dom, false, width, &mut sw).unwrap();
     result
 }
 
 /// Internal method that actually does the writing
 fn convert_dom_string_writer<'a>(
     dom: &RcDom,
+    styling: bool,
     width: Width,
     output: &'a mut StringWriter,
 ) -> io::Result<()> {
     let mut doc_state = HashSet::new();
-    let virt_dom = get_virtual_elements(&dom.document, StyleData::new(), &mut doc_state);
+    let styling = match styling {
+        true => Some(StyleData::new()),
+        _ => None,
+    };
+    let virt_dom = get_virtual_elements(&dom.document, styling, &mut doc_state);
     for el_type in virt_dom {
         match el_type {
             // TODO: this should word-wrap
