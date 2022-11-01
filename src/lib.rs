@@ -429,29 +429,29 @@ impl ElementMapping {
             // textual
             "a" => ElementMapping::with_replace(a_element),
             "abbr" => ElementMapping::with_replace(abbr_element),
-            "b" => ElementMapping::with_replace(formatted_element!("*{}*")),
+            "b" => ElementMapping::plain(),
             "bdi" => ElementMapping::plain(), // no idea how to support this
             "bdo" => ElementMapping::plain(), // TODO: we can support this
             "br" => ElementMapping::with_replace(br_element),
             "cite" => ElementMapping::plain(),
             "code" => ElementMapping::with_replace(formatted_element!("`{}`")),
             "data" => ElementMapping::plain(),
-            "dfn" => ElementMapping::with_replace(formatted_element!("/{}/")),
-            "em" => ElementMapping::with_replace(formatted_element!("/{}/")),
-            "i" => ElementMapping::with_replace(formatted_element!("/{}/")),
+            "dfn" => ElementMapping::plain(),
+            "em" => ElementMapping::plain(),
+            "i" => ElementMapping::plain(),
             "kbd" => ElementMapping::with_style(StyleData::set_uppercase),
-            "mark" => ElementMapping::with_replace(formatted_element!(">{}<")),
-            "q" => ElementMapping::with_replace(formatted_element!("“{}”")),
+            "mark" => ElementMapping::plain(),
+            "q" => ElementMapping::plain(),
             "rb" => ElementMapping::plain(),
             "rp" => ElementMapping::plain(),
             "rt" => ElementMapping::plain(),
             "rtc" => ElementMapping::plain(),
             "ruby" => ElementMapping::plain(),
             "s" => ElementMapping::with_style(StyleData::set_strike),
-            "samp" => ElementMapping::with_replace(formatted_element!("“{}”")),
+            "samp" => ElementMapping::plain(),
             "small" => ElementMapping::plain(), // no good way to support this
             "span" => ElementMapping::plain(),
-            "strong" => ElementMapping::with_replace(formatted_element!("*{}*")),
+            "strong" => ElementMapping::plain(),
             "sup" => ElementMapping::plain(), // TODO: we can support this
             "sub" => ElementMapping::plain(), // TODO: we can support this
             "time" => ElementMapping::plain(),
@@ -690,7 +690,7 @@ fn get_virtual_elements(
 ) -> Vec<VNodeType> {
     let styledata = match style {
         Some(s) => s,
-        None => StyleData::new()
+        None => StyleData::new(),
     };
     match node.data {
         NodeData::Text { ref contents } => {
@@ -710,10 +710,8 @@ fn get_virtual_elements(
             let tag_name = &name.local[..];
             let mapping = ElementMapping::get(tag_name);
             let style = match (style, mapping.style) {
-                (Some(st), Some(ma)) => {
-                    Some(ma(st))
-                }
-                _ => style
+                (Some(st), Some(ma)) => Some(ma(st)),
+                _ => style,
             };
 
             let mut child_vec = Vec::new();
