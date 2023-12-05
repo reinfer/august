@@ -852,8 +852,8 @@ impl<'a> BlockData<'a> {
 }
 
 fn inline_block_write(text: &str, data: &BlockData, output: &mut StringWriter) -> io::Result<()> {
-    let wrapper = textwrap::Wrapper::new(data.width);
-    let mut wrapped_lines = wrapper.wrap(&text).into_iter();
+    let options = textwrap::Options::new(data.width);
+    let mut wrapped_lines = textwrap::wrap(&text, &options).into_iter();
     if let Some(line) = wrapped_lines.next() {
         output.write_str(&line)?;
     }
@@ -932,8 +932,8 @@ fn generic_block_write(
     }
     if let Some(data) = &block_data {
         if !last_inline_text.is_empty() {
-            let wrapper = textwrap::Wrapper::new(data.width);
-            let wrapped_lines = wrapper.wrap(&last_inline_text).into_iter();
+            let options = textwrap::Options::new(data.width);
+            let wrapped_lines = textwrap::wrap(&last_inline_text, &options).into_iter();
             for line in wrapped_lines {
                 if first_block {
                     first_block = false;
