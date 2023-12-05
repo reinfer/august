@@ -52,6 +52,8 @@ use html5ever::{
 use itertools::Itertools;
 use num_rational::Ratio;
 use num_traits::Zero;
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 use regex::Regex;
 use textwrap;
 use unicode_segmentation::UnicodeSegmentation;
@@ -555,7 +557,11 @@ impl Block {
         match &self.block_type {
             BlockType::ListItem(id) => {
                 if id.ordered {
-                    format!("{:>width$}. ", count = id.count, width = id.count_length)
+                    format!(
+                        "{count:>width$}. ",
+                        count = id.count,
+                        width = id.count_length
+                    )
                 } else {
                     "* ".to_owned()
                 }

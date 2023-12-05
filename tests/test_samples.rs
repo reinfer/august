@@ -1,20 +1,21 @@
 use august;
+use pretty_assertions::assert_eq;
 use std::fs;
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 
 fn test_sample(html_path: &Path, txt_path: &Path) {
-    let mut html_file = fs::File::open(html_path).expect(
-        "Unable to open HTML sample");
+    let mut html_file = fs::File::open(html_path).expect("Unable to open HTML sample");
     let mut html_contents = String::new();
-    html_file.read_to_string(&mut html_contents).expect(
-        "Unable to read HTML sample");
+    html_file
+        .read_to_string(&mut html_contents)
+        .expect("Unable to read HTML sample");
 
-    let mut txt_file = fs::File::open(txt_path).expect(
-        "Unable to open text sample");
+    let mut txt_file = fs::File::open(txt_path).expect("Unable to open text sample");
     let mut txt_contents = String::new();
-    txt_file.read_to_string(&mut txt_contents).expect(
-        "Unable to read text sample");
+    txt_file
+        .read_to_string(&mut txt_contents)
+        .expect("Unable to read text sample");
     assert_eq!(august::convert(html_contents.as_str(), 79), txt_contents)
 }
 

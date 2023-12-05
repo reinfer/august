@@ -2,7 +2,9 @@ Here's a file with some unusual examples, like:
 
 * a link with no target
 * an abbreviation with no title
-* a *bold, with a paragraph inside*
+a bold, with a
+
+* paragraph inside
 
 1. an ordered list with an item
 this is totally not an item
