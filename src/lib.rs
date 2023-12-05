@@ -1135,6 +1135,7 @@ fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<W
             let mut positive = true;
             let mut start_idx = 0;
             let mut end_idx = widths.len() - 1;
+
             for _ in 0..widths.len() {
                 let idx = if positive { start_idx } else { end_idx };
                 if positive {
@@ -1256,6 +1257,17 @@ pub fn convert_unstyled(input: &str, width: Width) -> String {
     let dril = Tendril::from_str(input).unwrap();
     let dom = parser.one(dril);
     convert_dom_unstyled(&dom, width)
+}
+
+#[test]
+fn test_convert_unstyled_long() {
+    let html = String::from_utf8(vec![0x41; 100]).unwrap();
+    let actual = convert_unstyled(&html, 79);
+    let mut expected = String::new();
+    expected.push_str(&String::from_utf8(vec![0x41; 79]).unwrap());
+    expected.push_str("\n");
+    expected.push_str(&String::from_utf8(vec![0x41; 21]).unwrap());
+    assert_eq!(expected, actual);
 }
 
 /// Converts HTML text into plain text, using an I/O reader & writer
