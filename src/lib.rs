@@ -52,6 +52,8 @@ use html5ever::{
 use itertools::Itertools;
 use num_rational::Ratio;
 use num_traits::Zero;
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 use regex::Regex;
 use textwrap;
 use unicode_segmentation::UnicodeSegmentation;
@@ -555,7 +557,11 @@ impl Block {
         match &self.block_type {
             BlockType::ListItem(id) => {
                 if id.ordered {
-                    format!("{:>width$}. ", count = id.count, width = id.count_length)
+                    format!(
+                        "{count:>width$}. ",
+                        count = id.count,
+                        width = id.count_length
+                    )
                 } else {
                     "* ".to_owned()
                 }
@@ -846,8 +852,8 @@ impl<'a> BlockData<'a> {
 }
 
 fn inline_block_write(text: &str, data: &BlockData, output: &mut StringWriter) -> io::Result<()> {
-    let wrapper = textwrap::Wrapper::new(data.width);
-    let mut wrapped_lines = wrapper.wrap(&text).into_iter();
+    let options = textwrap::Options::new(data.width);
+    let mut wrapped_lines = textwrap::wrap(&text, &options).into_iter();
     if let Some(line) = wrapped_lines.next() {
         output.write_str(&line)?;
     }
@@ -926,8 +932,8 @@ fn generic_block_write(
     }
     if let Some(data) = &block_data {
         if !last_inline_text.is_empty() {
-            let wrapper = textwrap::Wrapper::new(data.width);
-            let wrapped_lines = wrapper.wrap(&last_inline_text).into_iter();
+            let options = textwrap::Options::new(data.width);
+            let wrapped_lines = textwrap::wrap(&last_inline_text, &options).into_iter();
             for line in wrapped_lines {
                 if first_block {
                     first_block = false;
@@ -1129,6 +1135,7 @@ fn recalculate_column_widths(widths: &[Ratio<Width>], max_width: Width) -> Vec<W
             let mut positive = true;
             let mut start_idx = 0;
             let mut end_idx = widths.len() - 1;
+
             for _ in 0..widths.len() {
                 let idx = if positive { start_idx } else { end_idx };
                 if positive {
@@ -1250,6 +1257,17 @@ pub fn convert_unstyled(input: &str, width: Width) -> String {
     let dril = Tendril::from_str(input).unwrap();
     let dom = parser.one(dril);
     convert_dom_unstyled(&dom, width)
+}
+
+#[test]
+fn test_convert_unstyled_long() {
+    let html = String::from_utf8(vec![0x41; 100]).unwrap();
+    let actual = convert_unstyled(&html, 79);
+    let mut expected = String::new();
+    expected.push_str(&String::from_utf8(vec![0x41; 79]).unwrap());
+    expected.push_str("\n");
+    expected.push_str(&String::from_utf8(vec![0x41; 21]).unwrap());
+    assert_eq!(expected, actual);
 }
 
 /// Converts HTML text into plain text, using an I/O reader & writer

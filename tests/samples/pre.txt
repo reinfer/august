@@ -17,4 +17,4 @@
 
 Regular text
 
-Some pre text * with bold  inside*
+Some pre text  with bold  inside
